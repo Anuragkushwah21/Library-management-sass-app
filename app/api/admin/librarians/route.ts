@@ -16,7 +16,8 @@ export async function GET(request: NextRequest) {
     const librarians = await User.find({
       role: 'librarian',
     })
-    .select('name email phone firstName lastName createdAt isVerified isApproved approvedAt rejectedAt rejectionReason')
+    .select('name email phone firstName lastName createdAt isVerified isApproved approvedAt rejectedAt rejectionReason status trialEndsAt approvalRequestedAt planExpiresAt plan')
+    .populate('plan', 'name')
     .sort({ createdAt: -1 });
 
     console.log(`✅ Found ${librarians.length} librarians`);

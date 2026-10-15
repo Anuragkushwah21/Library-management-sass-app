@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Logo } from '@/components/logo';
-import { api } from '@/lib/api';
+import { api, storeAuthData } from '@/lib/api';
 
 type RegistrationStep = 'personal' | 'contact' | 'password' | 'otp' | 'success';
 
@@ -218,24 +218,28 @@ export default function RegisterPage() {
     setError('');
 
     try {
-      await api.verifyOTP({
+      const res = await api.verifyOTP({
         email: formData.email,
         otp: otpCode,
       });
 
-      console.log('✅ Email verified:', formData.email);
-
-      toast({
-        title: 'Email Verified!',
-        description: 'Your profile is pending approval from Admin',
-      });
+      const user = res?.data?.user;
 
       setCurrentStep('success');
 
-      // Redirect to login after 3 seconds
-      setTimeout(() => {
-        router.push('/login');
-      }, 3000);
+      if (user) {
+        // Server already set the session cookie — straight into the dashboard
+        storeAuthData(user);
+        toast({
+          title: 'Email verified!',
+          description: 'Your free trial has started. Explore the dashboard.',
+        });
+        setTimeout(() => router.push('/librarian'), 1200);
+      } else {
+        // Already verified earlier — no new session issued
+        toast({ title: 'Email already verified', description: 'Please log in.' });
+        setTimeout(() => router.push('/login'), 1500);
+      }
     } catch (err: any) {
       setError(err.message || 'Invalid OTP');
       toast({
@@ -296,12 +300,12 @@ export default function RegisterPage() {
                 Registration Successful!
               </h3>
               <p className="text-sm text-muted-foreground">
-                Your email has been verified. Your profile is now
-                pending approval from Admin.
+                Your email has been verified and your free trial has
+                started.
               </p>
-              <p className="text-xs text-muted-foreground">
-                You will be notified via email once your account is
-                approved.
+              <p className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Taking you to your dashboard…
               </p>
             </div>
           )}

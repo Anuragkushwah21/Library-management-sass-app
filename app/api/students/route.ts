@@ -1,9 +1,15 @@
 // app/api/students/route.ts
+import { isPastDate } from '@/lib/date-rules';
 import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { handleRouteError } from '@/lib/api-response';
 import { Student } from '@/lib/models/Students';
-import { authenticateRequest } from '@/lib/middleware/auth';
+import { authenticateRequest, libraryIdFor } from '@/lib/middleware/auth';
+import { Shift } from '@/lib/models/Shift';
+import { normalizePhone } from '@/lib/phone';
+import { deriveMemberStatus } from '@/lib/services/student-status';
+import { ensureDefaultShift } from '@/lib/services/library';
+import mongoose from 'mongoose';
 
 export const runtime = 'nodejs';
 
@@ -29,6 +35,7 @@ export async function GET(request: NextRequest) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search.replace(/\D/g, '') || '^$', $options: 'i' } },
       ];
     }
 
@@ -57,15 +64,54 @@ export async function POST(request: NextRequest) {
       membershipStartDate,
       membershipEndDate,
       address,
-      libraryId, // optional, agar tum use kar rahe ho to rehne do
       seatNumber,
+      shiftId,
     } = body;
+    // NOTE: libraryId is never read from the body — it comes from the session
+
+    const libraryId = await libraryIdFor(decoded);
 
     if (!name || !email || !phone) {
       return NextResponse.json(
         { success: false, error: 'Name, email and phone are required' },
         { status: 400 }
       );
+    }
+
+    // Stored as E.164 so the QR check-in can find the student by phone
+    const e164 = normalizePhone(phone);
+    if (!e164) {
+      return NextResponse.json(
+        { success: false, error: 'Enter a valid mobile number, e.g. 98765 43210.' },
+        { status: 400 }
+      );
+    }
+
+    let resolvedShiftId: mongoose.Types.ObjectId | null = null;
+    if (libraryId) {
+      const duplicate = await Student.findOne({
+        libraryId,
+        phone: e164,
+        status: { $ne: 'REJECTED' },
+      }).select('name');
+      if (duplicate) {
+        return NextResponse.json(
+          { success: false, error: `${duplicate.name} already uses this phone number.` },
+          { status: 409 }
+        );
+      }
+
+      if (shiftId) {
+        const shift = mongoose.Types.ObjectId.isValid(shiftId)
+          ? await Shift.findOne({ _id: shiftId, libraryId, isActive: true }).select('_id')
+          : null;
+        if (!shift) {
+          return NextResponse.json({ success: false, error: 'Selected shift not found.' }, { status: 400 });
+        }
+        resolvedShiftId = shift._id as mongoose.Types.ObjectId;
+      } else {
+        resolvedShiftId = ((await ensureDefaultShift(libraryId))?._id as mongoose.Types.ObjectId) ?? null;
+      }
     }
 
     // Dates ko safely convert karo
@@ -84,6 +130,20 @@ export async function POST(request: NextRequest) {
       if (!Number.isNaN(d.getTime())) {
         endDate = d;
       }
+    }
+
+    // Start date may be in the past (existing members); the end date may not
+    if (endDate && isPastDate(endDate)) {
+      return NextResponse.json(
+        { success: false, error: 'Membership end date cannot be in the past' },
+        { status: 400 }
+      );
+    }
+    if (startDate && endDate && endDate <= startDate) {
+      return NextResponse.json(
+        { success: false, error: 'Membership end date must be after the start date' },
+        { status: 400 }
+      );
     }
 
     const now = new Date();
@@ -108,7 +168,10 @@ export async function POST(request: NextRequest) {
     const student = await Student.create({
       name,
       email,
-      phone,
+      phone: e164,
+      phoneRaw: phone,
+      status: deriveMemberStatus(null, endDate, now),
+      shiftId: resolvedShiftId,
       paymentStatus: effectivePaymentStatus,
       membershipStatus,
       membershipStartDate: startDate,

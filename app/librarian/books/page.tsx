@@ -1,5 +1,6 @@
 'use client';
 
+import { todayInput } from '@/lib/date-rules';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -156,7 +157,12 @@ export default function BooksPage() {
         memberId: selectedStudentId,
       };
 
-      if (dueDate) issuePayload.dueDate = dueDate;
+      if (dueDate) {
+        if (dueDate < todayInput()) {
+          throw new Error('Due date cannot be in the past.');
+        }
+        issuePayload.dueDate = dueDate;
+      }
       if (notes.trim()) issuePayload.notes = notes.trim();
 
       await api.issueBook(issuePayload);
@@ -320,6 +326,7 @@ const handleRenewBook = async (book: Book) => {
               <label className="text-sm font-medium">Due date (optional)</label>
               <Input
                 type="date"
+                min={todayInput()}
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
               />

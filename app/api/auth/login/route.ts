@@ -6,7 +6,10 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { User } from '@/lib/models/User';
 import { z } from 'zod';
 import { successResponse, handleApiError } from '@/lib/api-response';
-import jwt from 'jsonwebtoken';
+import { attachSession } from '@/lib/middleware/auth';
+import { getAccessInfo } from '@/lib/services/access';
+import { ensureLibraryForUser } from '@/lib/services/library';
+import { logAudit } from '@/lib/services/audit';
 
 const LoginSchema = z.object({
   email: z.string().email(),
@@ -60,32 +63,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Rejected?
-    if (user.rejectedAt) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Your registration was rejected. Reason: ${
-            user.rejectionReason || 'Not specified'
-          }`,
-          isRejected: true,
-        },
-        { status: 403 }
-      );
-    }
-
-    // Librarian approval?
-    if (user.role === 'librarian' && !user.isApproved) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            'Your profile is pending approval from Admin. Please wait for admin to approve your account.',
-          pendingApproval: true,
-        },
-        { status: 403 }
-      );
-    }
+    // Pending / rejected / expired librarians can still log in — the
+    // dashboard shows them the request-approval screen instead.
 
     // ✅ Account status (active / inactive)
     if (user.status && user.status !== 'active') {
@@ -100,22 +79,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const JWT_SECRET = process.env.JWT_SECRET;
-
-    if (!JWT_SECRET) {
-      throw new Error('JWT_SECRET is not defined in environment variables');
-    }
-
-    const token = jwt.sign(
-      {
-        userId: user._id.toString(),
-        email: user.email,
-        role: user.role,
-      },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
     const userData = {
       id: user._id,
       email: user.email,
@@ -128,12 +91,12 @@ export async function POST(request: NextRequest) {
       isApproved: user.isApproved,
       isVerified: user.isVerified,
       status: user.status, // ✅ include in response
+      access: getAccessInfo(user),
     };
 
     const responseBody = successResponse(
       {
         message: 'Login successful',
-        token,
         user: userData,
       },
       'Login successful',
@@ -142,13 +105,27 @@ export async function POST(request: NextRequest) {
 
     const response = NextResponse.json(responseBody, { status: 200 });
 
-    response.cookies.set('authToken', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60, // 7 days
-    });
+    attachSession(response, user);
+
+    if (user.role === 'librarian') {
+      // Creates the library (and backfills old data) on first login after the
+      // tenant upgrade. A failure here must not block the login itself.
+      let libraryId: string | null = null;
+      try {
+        libraryId = String((await ensureLibraryForUser(String(user._id)))._id);
+      } catch (err) {
+        console.error('[Login] library setup failed:', err);
+      }
+      await logAudit({
+        action: 'librarian.login',
+        actorId: String(user._id),
+        actorRole: 'librarian',
+        libraryId,
+        entity: 'User',
+        entityId: String(user._id),
+        request,
+      });
+    }
 
     return response;
   } catch (error: any) {

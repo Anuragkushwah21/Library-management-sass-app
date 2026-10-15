@@ -18,6 +18,7 @@ import { Lock, Bell, Moon, Loader2, Eye, EyeOff } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { api } from '@/lib/api';
 import { toast } from 'react-toastify';
+import { LibrarySettingsCard } from '@/components/librarian/library-settings-card';
 
 type NotificationSettings = {
   emailNotifications: boolean;
@@ -149,6 +150,8 @@ export default function LibrarianSettingsPage() {
           Manage your preferences and security settings
         </p>
       </div>
+
+      <LibrarySettingsCard />
 
       {/* Change Password */}
       <Card>

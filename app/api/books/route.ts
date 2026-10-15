@@ -5,7 +5,7 @@ import { handleRouteError } from '@/lib/api-response';
 import Book from '@/lib/models/Book';
 import { Transaction } from '@/lib/models/Transaction';
 import { Student } from '@/lib/models/Students';
-import { authenticateRequest } from '@/lib/middleware/auth';
+import { authenticateRequest, libraryIdFor } from '@/lib/middleware/auth';
 
 export const runtime = 'nodejs';
 
@@ -155,6 +155,7 @@ export async function POST(request: NextRequest) {
       totalCopies: copies,
       availableCopies: copies,
       librarianId: userId,
+      libraryId: await libraryIdFor(decoded),
     });
 
     return NextResponse.json(

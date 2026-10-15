@@ -1,4 +1,5 @@
 import { Schema, model, models, Types } from 'mongoose';
+import { defineModel } from './define-model';
 
 const bookSchema = new Schema(
   {
@@ -20,6 +21,9 @@ const bookSchema = new Schema(
       default: null,
     },
     dueDate: { type: Date, default: null },
+
+    // Tenant (PLAN §2.1) — set on new writes, backfilled for old docs
+    libraryId: { type: Types.ObjectId, ref: 'Library', default: null, index: true },
 
     // multi-tenant: har book kis librarian ki hai
     librarianId: {
@@ -44,5 +48,5 @@ bookSchema.index(
   }
 );
 
-const Book = models.Book || model('Book', bookSchema);
+const Book = defineModel<any>('Book', bookSchema);
 export default Book;

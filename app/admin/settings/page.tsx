@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Card,
   CardContent,
@@ -63,6 +63,22 @@ export default function AdminSettingsPage() {
     autoApproveLibrarians: false,
     maintenanceMode: false,
   });
+
+  // Load saved values — otherwise saving would overwrite them with the defaults above
+  useEffect(() => {
+    api
+      .getSystemSettings()
+      .then((res) => {
+        const d = res.data || {};
+        setSystemSettings((prev) => ({
+          siteName: d.siteName ?? prev.siteName,
+          supportEmail: d.supportEmail ?? prev.supportEmail,
+          autoApproveLibrarians: d.autoApproveLibrarians ?? prev.autoApproveLibrarians,
+          maintenanceMode: d.maintenanceMode ?? prev.maintenanceMode,
+        }));
+      })
+      .catch(() => {});
+  }, []);
 
   // PROFILE UPDATE
   const handleProfileUpdate = async () => {
@@ -502,7 +518,7 @@ export default function AdminSettingsPage() {
                 <div className="space-y-1">
                   <Label>Auto-Approve Librarians</Label>
                   <p className="text-sm text-muted-foreground">
-                    Automatically approve new librarian registrations
+                    Automatically approve approval requests sent after the free trial
                   </p>
                 </div>
                 <Switch

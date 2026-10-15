@@ -227,6 +227,7 @@ import { StatCard } from '@/components/librarian/stats-card';
 import { StudentChart } from '@/components/librarian/student-chart';
 import { PaymentChart } from '@/components/librarian/payment-chart';
 import { RecentActivity } from '@/components/librarian/recent-activity';
+import { TodayAttendanceCard } from '@/components/librarian/today-attendance-card';
 import { Users, CreditCard, Armchair, BookOpen } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
@@ -380,6 +381,8 @@ export default function DashboardClient() {
           color="bg-orange-500"
         />
       </div>
+
+      <TodayAttendanceCard />
 
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

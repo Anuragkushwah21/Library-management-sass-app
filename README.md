@@ -50,6 +50,29 @@ node --env-file=.env scripts/check-email.mjs
 node --env-file=.env scripts/check-email.mjs --send you@gmail.com
 ```
 
+### SMS (student OTP for QR check-in)
+
+Students verify their mobile number with an OTP. The provider is picked in
+`.env` — no code changes. Set `OTP_CHANNEL` and fill in only that provider's keys
+(all options are documented in `.env.example`):
+
+| `OTP_CHANNEL` | Service | Notes |
+|---|---|---|
+| `fast2sms` | Fast2SMS | India only, quickest to start |
+| `msg91` | MSG91 | India, needs a DLT-approved template |
+| `2factor` | 2Factor.in | India |
+| `twilio` | Twilio | Any country |
+| `webhook` | Any other HTTP SMS API | Describe it with the `OTP_WEBHOOK_*` variables |
+| `console` | none | Prints the code in the server terminal — local dev only |
+
+```bash
+npx tsx --env-file=.env scripts/check-sms.ts                     # check config
+npx tsx --env-file=.env scripts/check-sms.ts --send 9876543210   # send a real test SMS
+```
+
+On Vercel, add the same variables under Project → Settings → Environment Variables.
+A production build refuses the `console` channel unless `ALLOW_CONSOLE_OTP=true`.
+
 ### Pehla admin banana
 
 Registration sirf librarian banata hai, isliye pehla admin DB me manually

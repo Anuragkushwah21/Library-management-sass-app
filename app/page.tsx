@@ -16,6 +16,12 @@ import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/logo';
 import { SiteHeader } from '@/components/marketing/site-header';
 import { SiteFooter } from '@/components/marketing/site-footer';
+import { AdSpace } from '@/components/marketing/ad-space';
+import { PricingSection } from '@/components/marketing/pricing-section';
+import { getHomeData } from '@/lib/marketing-data';
+
+// Plans, ads and trial length are edited by the admin — render per request
+export const dynamic = 'force-dynamic';
 
 const FEATURES = [
   {
@@ -52,16 +58,18 @@ const FEATURES = [
     icon: ShieldCheck,
     title: 'Multi-Tenant & Secure',
     description:
-      'Every librarian\u2019s data is fully separate. JWT auth, OTP verification, admin approval.',
+      'Every librarian\u2019s data is fully separate. JWT auth, OTP verification, admin-approved accounts.',
   },
 ];
 
-const STEPS = [
+const getSteps = (trialDays: number) => [
   {
     icon: UserPlus,
     title: 'Create an account',
     description:
-      'Sign up and verify your email with an OTP. An admin then approves your account.',
+      trialDays > 0
+        ? `Sign up, verify your email with an OTP, and explore everything free for ${trialDays} days.`
+        : 'Sign up and verify your email with an OTP.',
   },
   {
     icon: Settings2,
@@ -71,9 +79,9 @@ const STEPS = [
   },
   {
     icon: Sparkles,
-    title: 'Run it',
+    title: 'Pick a plan',
     description:
-      'Issues, returns, renewals and memberships — daily work done in minutes.',
+      'Like it? Send an approval request with your plan from the dashboard — your data stays as it is.',
   },
 ];
 
@@ -84,7 +92,11 @@ const STATS = [
   { value: '0', label: 'Setup cost' },
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const { plans, ads, trialDays } = await getHomeData();
+  const STEPS = getSteps(trialDays);
+  const trialLabel = trialDays > 0 ? `Start ${trialDays}-day free trial` : 'Get started';
+
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
@@ -124,7 +136,7 @@ export default function LandingPage() {
           <div className="mt-9 flex flex-col justify-center gap-3 sm:flex-row">
             <Button asChild size="lg" className="group h-11 px-7">
               <Link href="/register">
-                Start for free
+                {trialLabel}
                 <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-0.5" />
               </Link>
             </Button>
@@ -134,7 +146,11 @@ export default function LandingPage() {
           </div>
 
           <p className="mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
-            {['No credit card required', 'Set up in minutes', 'Cancel anytime'].map(
+            {[
+              trialDays > 0 ? `${trialDays} days free` : 'Quick setup',
+              'No credit card required',
+              'Your data stays yours',
+            ].map(
               (item) => (
                 <span key={item} className="inline-flex items-center gap-1.5">
                   <Check className="h-3.5 w-3.5 text-emerald-600" />
@@ -161,6 +177,9 @@ export default function LandingPage() {
           ))}
         </div>
       </section>
+
+      {/* ─────────────── Ad space (admin-managed) ─────────────── */}
+      <AdSpace ads={ads} />
 
       {/* ─────────────── Features ─────────────── */}
       <section id="features" className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
@@ -235,6 +254,9 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* ─────────────── Pricing (admin-managed) ─────────────── */}
+      <PricingSection plans={plans} trialDays={trialDays} />
+
       {/* ─────────────── CTA ─────────────── */}
       <section className="mx-auto max-w-7xl px-4 py-20 sm:px-6 lg:px-8">
         <div className="relative overflow-hidden rounded-2xl border border-border/70 bg-card px-6 py-16 text-center sm:px-12">
@@ -248,12 +270,13 @@ export default function LandingPage() {
               Take your library digital today
             </h2>
             <p className="mx-auto mt-4 max-w-xl text-pretty text-muted-foreground">
-              Create an account, get admin approval, and start managing your
-              library.
+              {trialDays > 0
+                ? `Create an account and use every feature free for ${trialDays} days — no approval needed to start.`
+                : 'Create an account and start managing your library.'}
             </p>
             <Button asChild size="lg" className="group mt-8 h-11 px-8">
               <Link href="/register">
-                Create account
+                {trialLabel}
                 <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-0.5" />
               </Link>
             </Button>

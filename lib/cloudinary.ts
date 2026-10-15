@@ -92,3 +92,29 @@ export async function deleteAvatar(publicId: string): Promise<void> {
   ensureConfigured();
   await cloudinary.uploader.destroy(publicId, { invalidate: true });
 }
+
+/** Ad banners keep their aspect ratio; only capped in width. */
+export async function uploadAdImage(buffer: Buffer): Promise<UploadResult> {
+  ensureConfigured();
+
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'librasaas/ads',
+        resource_type: 'image',
+        transformation: [
+          { width: 1600, crop: 'limit' },
+          { quality: 'auto', fetch_format: 'auto' },
+        ],
+      },
+      (error, result) => {
+        if (error || !result) {
+          return reject(error || new Error('Cloudinary upload failed'));
+        }
+        resolve({ url: result.secure_url, publicId: result.public_id });
+      }
+    );
+
+    stream.end(buffer);
+  });
+}

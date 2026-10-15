@@ -5,7 +5,10 @@ import { connectDB } from '@/lib/db';
 import { User } from '@/lib/models/User';
 import { requireAdmin } from '@/lib/middleware/auth';
 import { successResponse, handleApiError } from '@/lib/api-response';
-import { notifyLibrarianOfDecision } from '@/lib/services/librarian-review';
+import {
+  applyRejection,
+  notifyLibrarianOfDecision,
+} from '@/lib/services/librarian-review';
 import { z } from 'zod';
 
 const RejectSchema = z.object({
@@ -21,7 +24,7 @@ export async function POST(
 
     await connectDB();
 
-    const body = await request.json();
+    const body = await request.json().catch(() => ({}));
     const { reason } = RejectSchema.parse(body);
 
     // ✅ FIXED: Await params
@@ -45,9 +48,7 @@ export async function POST(
     }
 
     // ✅ Reject librarian
-    librarian.isApproved = false;
-    librarian.rejectedAt = new Date();
-    librarian.rejectionReason = reason || 'No reason provided';
+    applyRejection(librarian, reason);
     await librarian.save();
 
     console.log('❌ Librarian rejected:', librarian.email);

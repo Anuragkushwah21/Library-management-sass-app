@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { handleRouteError } from '@/lib/api-response';
 import Seat from '@/lib/models/Seat';
-import { authenticateRequest } from '@/lib/middleware/auth';
+import { authenticateRequest, libraryIdFor } from '@/lib/middleware/auth';
 
 export const runtime = 'nodejs';
 
@@ -75,6 +75,7 @@ export async function POST(request: NextRequest) {
       status: status || 'available',
       notes: notes || undefined,
       librarianId: userId,
+      libraryId: await libraryIdFor(decoded),
     });
 
     return NextResponse.json(

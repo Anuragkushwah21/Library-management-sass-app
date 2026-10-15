@@ -5,7 +5,15 @@ import { connectDB } from '@/lib/db';
 import { User } from '@/lib/models/User';
 import { requireAdmin } from '@/lib/middleware/auth';
 import { successResponse, handleApiError } from '@/lib/api-response';
-import { notifyLibrarianOfDecision } from '@/lib/services/librarian-review';
+import {
+  applyApproval,
+  notifyLibrarianOfDecision,
+} from '@/lib/services/librarian-review';
+import { z } from 'zod';
+
+const ApproveSchema = z.object({
+  planId: z.string().optional().nullable(),
+});
 
 export async function POST(
   request: NextRequest,
@@ -18,6 +26,9 @@ export async function POST(
 
     // ✅ FIXED: Await params
     const { id: librarianId } = await params;
+
+    const body = await request.json().catch(() => ({}));
+    const { planId } = ApproveSchema.parse(body);
 
     // Find librarian
     const librarian = await User.findById(librarianId);
@@ -43,18 +54,8 @@ export async function POST(
       );
     }
 
-    if (librarian.isApproved) {
-      return NextResponse.json(
-        { success: false, error: 'Librarian is already approved' },
-        { status: 400 }
-      );
-    }
-
-    // ✅ Approve librarian
-    librarian.isApproved = true;
-    librarian.approvedAt = new Date();
-    librarian.rejectedAt = undefined;
-    librarian.rejectionReason = undefined;
+    // ✅ Approve librarian (re-approving an approved one just renews the plan)
+    await applyApproval(librarian, planId);
     await librarian.save();
 
     console.log('✅ Librarian approved:', librarian.email);
@@ -74,6 +75,7 @@ export async function POST(
             name: librarian.name,
             email: librarian.email,
             isApproved: librarian.isApproved,
+            planExpiresAt: librarian.planExpiresAt,
           },
         },
         'Librarian approved',

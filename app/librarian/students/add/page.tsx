@@ -1,5 +1,7 @@
 'use client';
 
+import { todayInput } from '@/lib/date-rules';
+import { formatTime } from '@/lib/time';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
@@ -23,6 +25,7 @@ import {
   MapPin,
   CalendarDays,
   CreditCard,
+  Clock,
   Armchair,
   Loader2,
 } from 'lucide-react';
@@ -60,7 +63,9 @@ export default function AddStudentPage() {
     membershipEndDate: '',
     paymentStatus: 'unpaid' as PaymentStatus,
     address: '',
+    shiftId: '',
   });
+  const [shifts, setShifts] = useState<{ _id: string; name: string; startTime: string; endTime: string }[]>([]);
 
   const [isLoading, setIsLoading] = useState(false);
   const [availableSeats, setAvailableSeats] = useState<Seat[]>([]);
@@ -88,6 +93,15 @@ export default function AddStudentPage() {
 
   useEffect(() => {
     fetchAvailableSeats();
+    // Attendance is per shift; default to the first active one
+    api
+      .getShifts()
+      .then((res: any) => {
+        const active = (res.data || []).filter((s: any) => s.isActive);
+        setShifts(active);
+        if (active[0]) setFormData((prev) => (prev.shiftId ? prev : { ...prev, shiftId: active[0]._id }));
+      })
+      .catch(() => setShifts([]));
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -113,6 +127,11 @@ export default function AddStudentPage() {
       new Date(formData.membershipStartDate)
     ) {
       toast.error('Membership end date must be after the start date.');
+      return;
+    }
+
+    if (formData.membershipEndDate < todayInput()) {
+      toast.error('Membership end date cannot be in the past.');
       return;
     }
 
@@ -158,6 +177,8 @@ export default function AddStudentPage() {
         membershipEndDate: '',
         paymentStatus: 'unpaid',
         address: '',
+        // Keep the shift — the next student is usually on the same one
+        shiftId: formData.shiftId,
       });
       setSelectedSeat(NO_SEAT);
       fetchAvailableSeats();
@@ -304,7 +325,12 @@ export default function AddStudentPage() {
                 id="membershipEndDate"
                 name="membershipEndDate"
                 type="date"
-                min={formData.membershipStartDate || undefined}
+                // End can't be before the start or before today (past start is fine for existing members)
+                min={
+                  formData.membershipStartDate && formData.membershipStartDate > todayInput()
+                    ? formData.membershipStartDate
+                    : todayInput()
+                }
                 value={formData.membershipEndDate}
                 onChange={handleChange}
                 required
@@ -335,6 +361,30 @@ export default function AddStudentPage() {
                   <SelectItem value="paid">Paid</SelectItem>
                   <SelectItem value="unpaid">Unpaid</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+
+            <Field
+              id="shiftId"
+              label="Shift"
+              icon={<Clock className="h-4 w-4" />}
+              hint="Used for QR attendance and late marking."
+            >
+              <Select
+                value={formData.shiftId}
+                onValueChange={(value) => setFormData((prev) => ({ ...prev, shiftId: value }))}
+                disabled={isLoading || shifts.length === 0}
+              >
+                <SelectTrigger id="shiftId" className="pl-9">
+                  <SelectValue placeholder={shifts.length ? 'Select shift' : 'No shifts yet'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {shifts.map((sh) => (
+                    <SelectItem key={sh._id} value={sh._id}>
+                      {sh.name} ({formatTime(sh.startTime)}–{formatTime(sh.endTime)})
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </Field>

@@ -1,4 +1,8 @@
 // app/api/students/[id]/route.ts
+import { normalizePhone } from '@/lib/phone';
+import { deriveMemberStatus } from '@/lib/services/student-status';
+import { Shift } from '@/lib/models/Shift';
+import { isPastDate, sameDay } from '@/lib/date-rules';
 import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { handleRouteError } from '@/lib/api-response';
@@ -100,11 +104,53 @@ export async function PUT(
       paymentStatus,
       membershipEndDate,
       seatNumber,
+      shiftId,
+      blocked,
     } = body;
 
     if (name !== undefined) updateData.name = name;
     if (email !== undefined) updateData.email = email;
-    if (phone !== undefined) updateData.phone = phone;
+    if (phone !== undefined && phone !== existingStudent.phone) {
+      const e164 = normalizePhone(phone);
+      if (!e164) {
+        return NextResponse.json(
+          { success: false, error: 'Enter a valid mobile number, e.g. 98765 43210.' },
+          { status: 400 }
+        );
+      }
+      if (e164 !== existingStudent.phone && existingStudent.libraryId) {
+        const taken = await Student.findOne({
+          _id: { $ne: existingStudent._id },
+          libraryId: existingStudent.libraryId,
+          phone: e164,
+          status: { $ne: 'REJECTED' },
+        }).select('name');
+        if (taken) {
+          return NextResponse.json(
+            { success: false, error: `${taken.name} already uses this phone number.` },
+            { status: 409 }
+          );
+        }
+      }
+      updateData.phone = e164;
+      updateData.phoneRaw = phone;
+    }
+
+    if (shiftId !== undefined && existingStudent.libraryId) {
+      const shift = Types.ObjectId.isValid(shiftId)
+        ? await Shift.findOne({ _id: shiftId, libraryId: existingStudent.libraryId }).select('_id')
+        : null;
+      if (!shift) {
+        return NextResponse.json({ success: false, error: 'Selected shift not found.' }, { status: 400 });
+      }
+      updateData.shiftId = shift._id;
+    }
+
+    // Block / unblock (QR check-in shows "access denied" while blocked)
+    if (blocked === true) updateData.status = 'BLOCKED';
+    if (blocked === false && existingStudent.status === 'BLOCKED') {
+      updateData.status = deriveMemberStatus(null, membershipEndDate ?? existingStudent.membershipEndDate);
+    }
 
     // paymentStatus + membershipStatus tie
     if (paymentStatus !== undefined) {
@@ -118,9 +164,25 @@ export async function PUT(
     }
 
     if (membershipEndDate !== undefined) {
+      // An unchanged saved date may already be past; a newly set one may not
+      if (
+        membershipEndDate &&
+        !sameDay(membershipEndDate, existingStudent.membershipEndDate) &&
+        isPastDate(membershipEndDate)
+      ) {
+        return NextResponse.json(
+          { success: false, error: 'Membership end date cannot be in the past' },
+          { status: 400 }
+        );
+      }
       updateData.membershipEndDate = membershipEndDate
         ? new Date(membershipEndDate)
         : null;
+    }
+
+    // Renewing (or shortening) the membership moves ACTIVE_MEMBER ⇄ EXPIRED
+    if (updateData.membershipEndDate !== undefined && updateData.status === undefined) {
+      updateData.status = deriveMemberStatus(existingStudent.status, updateData.membershipEndDate);
     }
 
     // NOTE: seatNumber ko yahan updateData me mat daalo.

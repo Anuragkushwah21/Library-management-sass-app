@@ -1,8 +1,10 @@
 // lib/models/Message.ts
 import mongoose, { Schema, Document, models, model } from 'mongoose';
+import { defineModel } from './define-model';
 
 export interface IMessage extends Document {
   librarianId?: mongoose.Types.ObjectId | null;
+  libraryId?: mongoose.Types.ObjectId | null;
   name: string;
   email: string;
   subject?: string;
@@ -19,6 +21,7 @@ const MessageSchema = new Schema<IMessage>(
       ref: 'User',
       default: null,
     },
+    libraryId: { type: Schema.Types.ObjectId, ref: 'Library', default: null },
     name: {
       type: String,
       required: true,
@@ -49,4 +52,4 @@ const MessageSchema = new Schema<IMessage>(
 );
 
 export const Message =
-  models.Message || model<IMessage>('Message', MessageSchema);
+  defineModel<IMessage>('Message', MessageSchema);

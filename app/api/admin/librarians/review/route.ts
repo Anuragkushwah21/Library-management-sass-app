@@ -7,7 +7,11 @@ import { User } from '@/lib/models/User';
 import { verifyReviewToken } from '@/lib/review-token';
 import { handleRouteError, successResponse } from '@/lib/api-response';
 import { enforceRateLimit } from '@/lib/rate-limit';
-import { notifyLibrarianOfDecision } from '@/lib/services/librarian-review';
+import {
+  applyApproval,
+  applyRejection,
+  notifyLibrarianOfDecision,
+} from '@/lib/services/librarian-review';
 
 export const runtime = 'nodejs';
 
@@ -38,8 +42,8 @@ async function resolveLibrarian(token: string | null) {
   }
 
   const librarian = await User.findById(payload.librarianId).select(
-    'name email phone role isVerified isApproved rejectedAt rejectionReason createdAt'
-  );
+    'name email phone role isVerified isApproved rejectedAt rejectionReason createdAt requestedPlan approvalRequestedAt approvalRequestNote planExpiresAt'
+  ).populate('requestedPlan', 'name price currency durationDays');
 
   if (!librarian || librarian.role !== 'librarian') {
     return { error: 'Librarian not found.', status: 404 as const };
@@ -64,12 +68,15 @@ export async function GET(request: NextRequest) {
 
     const l = resolved.librarian;
 
-    // Already decided? Tell the UI so it can hide the buttons
-    const decided = l.isApproved
-      ? 'approved'
-      : l.rejectedAt
-      ? 'rejected'
-      : null;
+    // Already decided? Tell the UI so it can hide the buttons. An expired
+    // plan counts as undecided — that is a renewal waiting for review.
+    const planActive = !l.planExpiresAt || l.planExpiresAt > new Date();
+    const decided =
+      l.isApproved && planActive
+        ? 'approved'
+        : l.rejectedAt
+        ? 'rejected'
+        : null;
 
     return NextResponse.json(
       successResponse(
@@ -81,6 +88,8 @@ export async function GET(request: NextRequest) {
             phone: l.phone,
             isVerified: l.isVerified,
             createdAt: l.createdAt,
+            requestedPlan: l.requestedPlan ?? null,
+            approvalRequestNote: l.approvalRequestNote ?? null,
           },
           decided,
           rejectionReason: l.rejectionReason,
@@ -132,7 +141,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Two admins may act on the same email — don't process it twice
-    if (librarian.isApproved && action === 'approve') {
+    const planActive =
+      !librarian.planExpiresAt || librarian.planExpiresAt > new Date();
+    if (librarian.isApproved && planActive && action === 'approve') {
       return NextResponse.json(
         { success: false, error: 'This librarian is already approved.' },
         { status: 409 }
@@ -146,14 +157,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === 'approve') {
-      librarian.isApproved = true;
-      librarian.approvedAt = new Date();
-      librarian.rejectedAt = undefined;
-      librarian.rejectionReason = undefined;
+      // The email link approves on the plan the librarian asked for
+      await applyApproval(librarian);
     } else {
-      librarian.isApproved = false;
-      librarian.rejectedAt = new Date();
-      librarian.rejectionReason = reason || 'No reason provided';
+      applyRejection(librarian, reason);
     }
 
     await librarian.save();

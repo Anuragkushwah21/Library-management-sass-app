@@ -1,4 +1,5 @@
 // app/api/transactions/issue/route.ts
+import { isPastDate } from '@/lib/date-rules';
 import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { handleRouteError } from '@/lib/api-response';
@@ -6,7 +7,7 @@ import { Transaction } from '@/lib/models/Transaction';
 import Book from '@/lib/models/Book';
 import { Student } from '@/lib/models/Students';
 import { Types } from 'mongoose';
-import { authenticateRequest } from '@/lib/middleware/auth';
+import { authenticateRequest, libraryIdFor } from '@/lib/middleware/auth';
 
 export const runtime = 'nodejs';
 
@@ -23,7 +24,6 @@ export async function POST(request: NextRequest) {
       studentId,      // optional old name
       memberId,       // frontend se aa raha hai
       bookId,
-      libraryId,
       dueDate,        // optional from UI
       notes,
     } = body;
@@ -128,6 +128,12 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
+      if (isPastDate(d)) {
+        return NextResponse.json(
+          { success: false, error: 'Due date cannot be in the past' },
+          { status: 400 }
+        );
+      }
       finalDueDate = d;
     } else {
       const d = new Date();
@@ -141,7 +147,8 @@ export async function POST(request: NextRequest) {
     const transaction = await Transaction.create({
       bookId,
       memberId: effectiveMemberId,
-      libraryId,             // optional if you still use it
+      // From the session, never the request body (it used to be read from the body)
+      libraryId: await libraryIdFor(decoded),
       librarianId: userId,   // tenant owner
       issuedBy: userId,
       issueDate,

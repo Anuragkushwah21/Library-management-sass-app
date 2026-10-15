@@ -1,5 +1,9 @@
 // lib/services/librarian-review.ts
+import mongoose from 'mongoose';
 import { User } from '@/lib/models/User';
+import { Plan } from '@/lib/models/Plan';
+import { ApiError } from '@/lib/api-response';
+import { planExpiryFrom } from '@/lib/services/access';
 import { createReviewToken } from '@/lib/review-token';
 import {
   sendLibrarianDecisionEmail,
@@ -93,4 +97,41 @@ export async function notifyLibrarianOfDecision(
       `[LibrarianReview] Decision email failed for ${librarian.email}: ${result.error}`
     );
   }
+}
+
+/**
+ * Approve a librarian on a plan. `planId` overrides the plan they asked for;
+ * with neither, access has no end date.
+ */
+export async function applyApproval(
+  librarian: any,
+  planId?: string | null
+): Promise<void> {
+  const chosen = planId || librarian.requestedPlan || null;
+
+  let plan: { _id: unknown; durationDays: number } | null = null;
+  if (chosen) {
+    if (!mongoose.Types.ObjectId.isValid(String(chosen))) {
+      throw new ApiError(400, 'Invalid plan.');
+    }
+    plan = await Plan.findById(chosen)
+      .select('durationDays')
+      .lean<{ _id: unknown; durationDays: number }>();
+    if (!plan) throw new ApiError(400, 'Selected plan not found.');
+  }
+
+  librarian.isApproved = true;
+  librarian.approvedAt = new Date();
+  librarian.rejectedAt = undefined;
+  librarian.rejectionReason = undefined;
+  librarian.approvalRequestedAt = null;
+  librarian.plan = plan?._id ?? null;
+  librarian.planExpiresAt = planExpiryFrom(plan?.durationDays);
+}
+
+export function applyRejection(librarian: any, reason?: string): void {
+  librarian.isApproved = false;
+  librarian.rejectedAt = new Date();
+  librarian.rejectionReason = reason || 'No reason provided';
+  librarian.approvalRequestedAt = null;
 }

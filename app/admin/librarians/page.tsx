@@ -80,6 +80,10 @@ interface Librarian {
   rejectedAt?: string;
   rejectionReason?: string;
   status?: string; // 'active' | 'inactive'
+  trialEndsAt?: string;
+  approvalRequestedAt?: string | null;
+  planExpiresAt?: string | null;
+  plan?: { name: string } | null;
 }
 
 export default function AllLibrariansPage() {
@@ -395,14 +399,36 @@ export default function AllLibrariansPage() {
       );
     }
     if (librarian.isApproved) {
+      if (librarian.planExpiresAt && new Date(librarian.planExpiresAt) <= new Date()) {
+        return <Badge variant="outline" className="border-amber-500 text-amber-600">Plan expired</Badge>;
+      }
       return (
-        <Badge variant="default" className="bg-green-600 flex items-center gap-1">
-          <UserCheck className="w-3 h-3" />
-          Approved
-        </Badge>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="default" className="bg-green-600 flex items-center gap-1">
+              <UserCheck className="w-3 h-3" />
+              Approved
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>
+              {librarian.plan?.name ?? 'No plan'}
+              {librarian.planExpiresAt
+                ? ` · until ${new Date(librarian.planExpiresAt).toLocaleDateString()}`
+                : ' · no expiry'}
+            </p>
+          </TooltipContent>
+        </Tooltip>
       );
     }
-    return <Badge variant="secondary">Pending</Badge>;
+    if (librarian.approvalRequestedAt) {
+      return <Badge variant="secondary">Requested</Badge>;
+    }
+    const trialEnd = librarian.trialEndsAt ? new Date(librarian.trialEndsAt) : null;
+    if (trialEnd && trialEnd > new Date()) {
+      return <Badge variant="outline">Trial</Badge>;
+    }
+    return <Badge variant="outline" className="text-muted-foreground">Trial ended</Badge>;
   };
 
   // Account status badge (Active/Inactive)

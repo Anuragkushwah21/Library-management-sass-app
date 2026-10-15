@@ -1,5 +1,6 @@
 // lib/models/Transaction.ts
 import mongoose from 'mongoose';
+import { defineModel } from './define-model';
 
 const { Schema, model, models } = mongoose;
 
@@ -21,6 +22,7 @@ export interface ITransaction {
 
   // multi-tenant owner
   librarianId: mongoose.Types.ObjectId;
+  libraryId?: mongoose.Types.ObjectId | null;
 }
 
 const TransactionSchema = new Schema<ITransaction>(
@@ -73,6 +75,9 @@ const TransactionSchema = new Schema<ITransaction>(
       type: String,
     },
 
+    // Tenant (PLAN §2.1) — set on new writes, backfilled for old docs
+    libraryId: { type: Schema.Types.ObjectId, ref: 'Library', default: null, index: true },
+
     // Multi-tenant owner (required)
     librarianId: {
       type: Schema.Types.ObjectId,
@@ -98,4 +103,4 @@ TransactionSchema.pre('save', function () {
 });
 
 export const Transaction =
-  models.Transaction || model<ITransaction>('Transaction', TransactionSchema);
+  defineModel<ITransaction>('Transaction', TransactionSchema);

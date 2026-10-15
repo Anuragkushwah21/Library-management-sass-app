@@ -13,18 +13,24 @@ import {
   X,
   UserCircle,
   Settings,
+  ClipboardCheck,
+  QrCode,
+  Clock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Logo } from '@/components/logo';
 
 const navItems = [
   { label: 'Dashboard', href: '/librarian', icon: LayoutDashboard },
+  { label: 'Attendance', href: '/librarian/attendance', icon: ClipboardCheck },
   { label: 'All Students', href: '/librarian/students', icon: Users },
   { label: 'Memberships', href: '/librarian/membership', icon: CreditCard },
   { label: 'Add Student', href: '/librarian/students/add', icon: Users },
   { label: 'Seats', href: '/librarian/seats', icon: Armchair },
   { label: 'Books Issue', href: '/librarian/books', icon: BookOpen },
   { label: 'Send Offer', href: '/librarian/offers', icon: Megaphone },
+  { label: 'Library QR', href: '/librarian/library-qr', icon: QrCode },
+  { label: 'Shifts', href: '/librarian/shifts', icon: Clock },
 
   // New items
   { label: 'Account', href: '/librarian/account', icon: UserCircle },
@@ -73,9 +79,13 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       <nav className="flex-1 px-3 py-4 space-y-2 overflow-y-auto">
         {navItems.map((item) => {
           const Icon = item.icon;
+          // Dashboard is the prefix of every route, so it needs an exact match;
+          // Add Student is its own item, so it shouldn't also light up All Students
           const isActive =
             pathname === item.href ||
-            pathname.startsWith(item.href + '/');
+            (item.href !== '/librarian' &&
+              pathname.startsWith(item.href + '/') &&
+              !navItems.some((n) => n.href !== item.href && pathname.startsWith(n.href) && n.href.length > item.href.length));
 
           return (
             <Link

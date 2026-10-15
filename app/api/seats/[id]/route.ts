@@ -1,4 +1,5 @@
 // app/api/seats/[id]/route.ts
+import { isPastDate } from '@/lib/date-rules';
 import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { handleRouteError } from '@/lib/api-response';
@@ -64,6 +65,13 @@ export async function PUT(
 
     const { id } = await context.params; // 👈 IMPORTANT
     const { status, studentId, reservedUntil, notes } = await request.json();
+
+    if (reservedUntil && isPastDate(reservedUntil)) {
+      return NextResponse.json(
+        { success: false, error: 'Reservation end date cannot be in the past' },
+        { status: 400 }
+      );
+    }
 
     if (!id || !Types.ObjectId.isValid(id)) {
       return NextResponse.json(

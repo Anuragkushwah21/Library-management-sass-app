@@ -12,15 +12,17 @@ export async function GET(request: NextRequest) {
 
     await connectDB();
 
-    // ✅ Get pending librarians (verified email but not approved)
+    // ✅ Librarians who sent an approval request from their dashboard
     const pendingLibrarians = await User.find({
       role: 'librarian',
-      isVerified: true,        // ⬅️ Email must be verified
-      isApproved: false,       // ⬅️ Not yet approved
-      rejectedAt: { $exists: false }, // ⬅️ Not rejected
+      isVerified: true,
+      isApproved: false,
+      approvalRequestedAt: { $ne: null },
+      rejectedAt: null, // matches missing too
     })
-    .select('name email phone firstName lastName createdAt isVerified isApproved')
-    .sort({ createdAt: -1 }); // Newest first
+    .select('name email phone firstName lastName createdAt isVerified isApproved trialEndsAt approvalRequestedAt approvalRequestNote requestedPlan planExpiresAt')
+    .populate('requestedPlan', 'name price currency durationDays')
+    .sort({ approvalRequestedAt: -1 }); // Newest request first
 
     console.log(`✅ Found ${pendingLibrarians.length} pending librarians`);
 

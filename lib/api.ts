@@ -28,6 +28,8 @@ function getApiUrl(endpoint: string): string {
   return `${baseUrl}${endpoint}`;
 }
 
+export const ACCESS_LOCKED_EVENT = 'librasaas:access-locked';
+
 // Core fetch with auth + JSON error handling
 async function apiFetch(endpoint: string, options: FetchOptions = {}) {
   const headers: Record<string, string> = {
@@ -50,6 +52,11 @@ async function apiFetch(endpoint: string, options: FetchOptions = {}) {
   }
 
   if (!response.ok) {
+    // Trial/plan ended mid-session — librarian layout swaps to the lock screen
+    if (body?.code === 'ACCESS_LOCKED' && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(ACCESS_LOCKED_EVENT));
+    }
+
     const message =
       (body && (body.error || body.message)) ||
       `API error: ${response.status}`;
@@ -210,9 +217,10 @@ export const api = {
     return apiFetch(`/api/admin/librarians${query ? `?${query}` : ''}`);
   },
 
-  approveLibrarian: (librarianId: string) =>
+  approveLibrarian: (librarianId: string, planId?: string | null) =>
     apiFetch(`/api/admin/librarians/${librarianId}/approve`, {
       method: 'POST',
+      body: JSON.stringify({ planId: planId || null }),
     }),
 
   rejectLibrarian: (librarianId: string, reason: string) =>
@@ -262,16 +270,93 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  getSystemSettings: () => apiFetch('/api/admin/settings/system'),
+
   updateSystemSettings: (data: {
-    siteName: string;
-    supportEmail: string;
-    autoApproveLibrarians: boolean;
-    maintenanceMode: boolean;
+    siteName?: string;
+    supportEmail?: string;
+    autoApproveLibrarians?: boolean;
+    maintenanceMode?: boolean;
+    trialDays?: number;
   }) =>
     apiFetch('/api/admin/settings/system', {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+
+  // ========== PLANS & ADS (admin) ==========
+  getAdminPlans: () => apiFetch('/api/admin/plans'),
+  createPlan: (data: any) =>
+    apiFetch('/api/admin/plans', { method: 'POST', body: JSON.stringify(data) }),
+  updatePlan: (id: string, data: any) =>
+    apiFetch(`/api/admin/plans/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deletePlan: (id: string) =>
+    apiFetch(`/api/admin/plans/${id}`, { method: 'DELETE' }),
+
+  getAdminAds: () => apiFetch('/api/admin/ads'),
+  createAd: (data: any) =>
+    apiFetch('/api/admin/ads', { method: 'POST', body: JSON.stringify(data) }),
+  updateAd: (id: string, data: any) =>
+    apiFetch(`/api/admin/ads/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  deleteAd: (id: string) =>
+    apiFetch(`/api/admin/ads/${id}`, { method: 'DELETE' }),
+  uploadAdImage: async (file: File): Promise<string> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/admin/ads/upload', {
+      method: 'POST',
+      body: form,
+      credentials: 'same-origin',
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.error || 'Upload failed');
+    return data.data.url;
+  },
+
+  // ========== TRIAL / APPROVAL (librarian) ==========
+  getAccessStatus: () => apiFetch('/api/librarian/access'),
+  requestApproval: (data: { planId?: string | null; note?: string }) =>
+    apiFetch('/api/librarian/access', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // ========== LIBRARY / SHIFTS / ATTENDANCE (librarian) ==========
+  getLibrary: () => apiFetch('/api/library'),
+  updateLibrary: (data: any) =>
+    apiFetch('/api/library', { method: 'PATCH', body: JSON.stringify(data) }),
+  getLibraryQr: () => apiFetch('/api/library/qr'),
+  rotateLibraryQr: () => apiFetch('/api/library/qr/rotate', { method: 'POST' }),
+
+  getShifts: () => apiFetch('/api/shifts'),
+  createShift: (data: any) =>
+    apiFetch('/api/shifts', { method: 'POST', body: JSON.stringify(data) }),
+  updateShift: (id: string, data: any) =>
+    apiFetch(`/api/shifts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteShift: (id: string) => apiFetch(`/api/shifts/${id}`, { method: 'DELETE' }),
+
+  getAttendance: (params: { date?: string; shiftId?: string } = {}) => {
+    const q = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v) as [string, string][]
+    ).toString();
+    return apiFetch(`/api/attendance${q ? `?${q}` : ''}`);
+  },
+  manualAttendance: (data: {
+    studentId: string;
+    shiftId: string;
+    date: string;
+    action: 'checkin' | 'checkout';
+    time?: string;
+    note?: string;
+  }) => apiFetch('/api/attendance/manual', { method: 'POST', body: JSON.stringify(data) }),
+  overrideAttendance: (id: string, data: { arrivalStatus?: 'PRESENT' | 'LATE'; note?: string }) =>
+    apiFetch(`/api/attendance/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
   // ========== LIBRARIAN DASHBOARD ==========
   getDashboardStats: () => apiFetch('/api/dashboard'),

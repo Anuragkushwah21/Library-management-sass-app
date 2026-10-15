@@ -1,6 +1,7 @@
 // lib/models/User.ts
 
 import mongoose, { Schema, Document } from 'mongoose';
+import { defineModel } from './define-model';
 import bcrypt from 'bcryptjs';
 import { randomInt } from 'crypto';
 
@@ -14,12 +15,23 @@ export interface IUser extends Document {
   role: 'admin' | 'librarian';
   profileImage?: string;
 
+  // Tenant: the library this librarian runs (PLAN §2.1)
+  libraryId?: mongoose.Types.ObjectId | null;
+
   // Approval fields
   isApproved: boolean;
   approvedBy?: mongoose.Types.ObjectId;
   approvedAt?: Date;
   rejectedAt?: Date;
   rejectionReason?: string;
+
+  // Trial + subscription
+  trialEndsAt?: Date;
+  approvalRequestedAt?: Date | null;
+  approvalRequestNote?: string;
+  requestedPlan?: mongoose.Types.ObjectId | null;
+  plan?: mongoose.Types.ObjectId | null;
+  planExpiresAt?: Date | null;
 
   // OTP fields
   otp?: string;
@@ -98,6 +110,13 @@ const UserSchema = new Schema<IUser>(
       type: String,
     },
 
+    libraryId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Library',
+      default: null,
+      index: true,
+    },
+
     // Approval fields
     isApproved: {
       type: Boolean,
@@ -119,6 +138,40 @@ const UserSchema = new Schema<IUser>(
 
     rejectionReason: {
       type: String,
+    },
+
+    // Trial starts when the email is verified; access after it ends needs
+    // an approved request (see lib/services/access.ts)
+    trialEndsAt: {
+      type: Date,
+    },
+
+    approvalRequestedAt: {
+      type: Date,
+      default: null,
+    },
+
+    approvalRequestNote: {
+      type: String,
+      trim: true,
+    },
+
+    requestedPlan: {
+      type: Schema.Types.ObjectId,
+      ref: 'Plan',
+      default: null,
+    },
+
+    plan: {
+      type: Schema.Types.ObjectId,
+      ref: 'Plan',
+      default: null,
+    },
+
+    // null = approved without an end date
+    planExpiresAt: {
+      type: Date,
+      default: null,
     },
 
     // OTP
@@ -220,4 +273,4 @@ UserSchema.methods.clearOTP = function (): void {
 UserSchema.index({ role: 1, isApproved: 1 });
 
 export const User =
-  mongoose.models.User || mongoose.model<IUser>('User', UserSchema);
+  defineModel<IUser>('User', UserSchema);

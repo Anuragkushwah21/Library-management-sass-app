@@ -1,5 +1,6 @@
 'use client';
 
+import { minForExisting, todayInput } from '@/lib/date-rules';
 import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/librarian/data-table';
 import { Input } from '@/components/ui/input';
@@ -270,6 +271,14 @@ export default function StudentsPage() {
     };
 
     if (editForm.membershipEndDate) {
+      const saved = student.membershipEndDate?.slice(0, 10);
+      if (
+        editForm.membershipEndDate !== saved &&
+        editForm.membershipEndDate < todayInput()
+      ) {
+        toast.error('Membership end date cannot be in the past.');
+        return;
+      }
       payload.membershipEndDate = editForm.membershipEndDate;
     }
 
@@ -544,6 +553,11 @@ export default function StudentsPage() {
                 <Input
                   name="membershipEndDate"
                   type="date"
+                  min={minForExisting(
+                    students
+                      .find((s) => s._id === editingId)
+                      ?.membershipEndDate?.slice(0, 10)
+                  )}
                   value={editForm.membershipEndDate}
                   onChange={handleEditChange}
                 />

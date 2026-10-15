@@ -4,6 +4,7 @@ export interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
   error?: string;
+  code?: string;
   message?: string;
   statusCode: number;
 }
@@ -17,11 +18,16 @@ export function successResponse<T>(data: T, message = 'Success', statusCode = 20
   };
 }
 
-export function errorResponse(error: string, statusCode = 400): ApiResponse {
+export function errorResponse(
+  error: string,
+  statusCode = 400,
+  code?: string
+): ApiResponse {
   return {
     success: false,
     error,
     statusCode,
+    ...(code ? { code } : {}),
   };
 }
 
@@ -29,6 +35,8 @@ export class ApiError extends Error {
   constructor(
     public statusCode: number,
     message: string,
+    /** Machine-readable reason the client can branch on, e.g. ACCESS_LOCKED */
+    public code?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -37,7 +45,7 @@ export class ApiError extends Error {
 
 export function handleApiError(error: any) {
   if (error instanceof ApiError) {
-    return errorResponse(error.message, error.statusCode);
+    return errorResponse(error.message, error.statusCode, error.code);
   }
 
   if (error instanceof Error) {
@@ -59,7 +67,11 @@ export function handleRouteError(
 ): NextResponse {
   if (error instanceof ApiError) {
     return NextResponse.json(
-      { success: false, error: error.message },
+      {
+        success: false,
+        error: error.message,
+        ...(error.code ? { code: error.code } : {}),
+      },
       { status: error.statusCode }
     );
   }

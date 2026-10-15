@@ -15,6 +15,8 @@ import {
   User,
   BookOpen,
   Mail,
+  CreditCard,
+  Megaphone,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -30,6 +32,15 @@ import { api, getStoredUser, clearAuthData, isAdmin } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Logo } from '@/components/logo';
+import { BottomNav, type BottomNavTab } from '@/components/librarian/bottom-nav';
+
+// Main sections for the mobile tab bar; the rest stay under "More"
+const bottomTabs: BottomNavTab[] = [
+  { label: 'Home', href: '/admin/dashboard', icon: LayoutDashboard },
+  { label: 'Approvals', href: '/admin/librarians/pending', icon: UserCheck },
+  { label: 'Librarians', href: '/admin/librarians', icon: Users },
+  { label: 'Plans', href: '/admin/plans', icon: CreditCard },
+];
 
 const sidebarLinks = [
   {
@@ -47,7 +58,17 @@ const sidebarLinks = [
     label: 'All Librarians',
     icon: Users,
   },
-   {
+  {
+    href: '/admin/plans',
+    label: 'Plans & Trial',
+    icon: CreditCard,
+  },
+  {
+    href: '/admin/ads',
+    label: 'Advertisements',
+    icon: Megaphone,
+  },
+  {
     href: '/admin/messages',
     label: 'Librarians Messages',
     icon: Mail,
@@ -240,8 +261,15 @@ export default function AdminLayout({
         </header>
 
         {/* Page Content */}
-        <main className="p-4 lg:p-6">{children}</main>
+        {/* Bottom padding keeps content clear of the fixed mobile tab bar */}
+        <main className="p-4 pb-24 lg:p-6">{children}</main>
       </div>
+
+      <BottomNav
+        tabs={bottomTabs}
+        onMore={() => setIsSidebarOpen(true)}
+        className="fixed inset-x-0 bottom-0 z-30 lg:hidden"
+      />
     </div>
   );
 }

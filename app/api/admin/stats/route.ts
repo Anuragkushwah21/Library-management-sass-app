@@ -33,7 +33,9 @@ export async function GET(request: NextRequest) {
                   $and: [
                     { $eq: ['$isVerified', true] },
                     { $eq: ['$isApproved', false] },
-                    { $eq: [{ $ifNull: ['$rejectedAt', null] }, null] }
+                    { $eq: [{ $ifNull: ['$rejectedAt', null] }, null] },
+                    // Only librarians who actually sent a request — trial users aren't waiting
+                    { $ne: [{ $ifNull: ['$approvalRequestedAt', null] }, null] }
                   ]
                 },
                 1,

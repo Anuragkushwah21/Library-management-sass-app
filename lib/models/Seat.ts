@@ -1,4 +1,5 @@
 import { Schema, model, models, Types } from 'mongoose';
+import { defineModel } from './define-model';
 
 export type SeatStatus = 'available' | 'reserved' | 'occupied';
 
@@ -47,6 +48,9 @@ const seatSchema = new Schema(
       default: undefined,
     },
 
+    // Tenant (PLAN §2.1) — set on new writes, backfilled for old docs
+    libraryId: { type: Types.ObjectId, ref: 'Library', default: null, index: true },
+
     // Multi-tenant: seat kis librarian ka hai
     librarianId: {
       type: Types.ObjectId,
@@ -71,5 +75,5 @@ seatSchema.methods.release = function () {
   this.notes = undefined;
 };
 
-const Seat = models.Seat || model('Seat', seatSchema);
+const Seat = defineModel<any>('Seat', seatSchema);
 export default Seat;

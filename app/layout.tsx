@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import { Analytics } from '@vercel/analytics/next';
 import './globals.css';
@@ -7,6 +7,13 @@ import { ThemeProvider } from '@/components/theme-provider';
 
 const _geist = Geist({ subsets: ['latin'] });
 const _geistMono = Geist_Mono({ subsets: ['latin'] });
+
+// viewportFit: cover lets the mobile tab bar pad itself above the iPhone home indicator
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+};
 
 export const metadata: Metadata = {
   title: 'Library Management System',

@@ -6,7 +6,13 @@ import { enforceRateLimit } from '@/lib/rate-limit';
 import { User } from '@/lib/models/User';
 import { z } from 'zod';
 import { successResponse, handleApiError } from '@/lib/api-response';
-import { notifyAdminsOfPendingLibrarian } from '@/lib/services/librarian-review';
+import { attachSession } from '@/lib/middleware/auth';
+import { ensureLibraryForUser } from '@/lib/services/library';
+import {
+  getAccessInfo,
+  getTrialDays,
+  trialEndFrom,
+} from '@/lib/services/access';
 
 const VerifyOTPSchema = z.object({
   email: z.string().email(),
@@ -62,34 +68,55 @@ export async function POST(request: NextRequest) {
     user.isVerified = true;
     user.otp = undefined;
     user.otpExpiry = undefined;
+
+    // The free trial starts now. Admins are only contacted when the
+    // librarian sends an approval request from the dashboard.
+    if (user.role === 'librarian' && !user.isApproved && !user.trialEndsAt) {
+      user.trialEndsAt = trialEndFrom(new Date(), await getTrialDays());
+    }
+
     await user.save();
 
-    // Librarian yahin "pending approval" banta hai (pending list ka filter
-    // isVerified: true + isApproved: false hai), isliye admins ko yahan notify
-    // karte hain — registration par nahi, warna unverified signups ka spam jayega.
-    if (user.role === 'librarian' && !user.isApproved && !user.rejectedAt) {
-      // Await nahi karte — email fail hone se verification nahi rukni chahiye
-      notifyAdminsOfPendingLibrarian(user).catch((err) =>
-        console.error('[VerifyOTP] admin notification failed:', err)
+    // Each librarian gets their own library (tenant) as soon as they're verified
+    if (user.role === 'librarian') {
+      await ensureLibraryForUser(String(user._id)).catch((err) =>
+        console.error('[VerifyOTP] library setup failed:', err)
       );
     }
 
-    // ✅ Return success WITHOUT token (user must login separately)
-    return NextResponse.json(
+    const access = getAccessInfo(user);
+
+    // Log the user straight in so they land on the dashboard
+    const response = NextResponse.json(
       successResponse(
         {
-          message: user.role === 'librarian' 
-            ? 'Email verified successfully! Your account is pending admin approval. You will be able to login once approved.'
-            : 'Email verified successfully! You can now login.',
+          message: 'Email verified successfully! Welcome aboard.',
           email: user.email,
           isVerified: true,
-          requiresApproval: user.role === 'librarian' && !user.isApproved,
+          user: {
+            id: user._id,
+            email: user.email,
+            name: user.name,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            phone: user.phone,
+            role: user.role,
+            profileImage: user.profileImage,
+            isApproved: user.isApproved,
+            isVerified: user.isVerified,
+            status: user.status,
+            access,
+          },
         },
         'Email verified',
         200
       ),
       { status: 200 }
     );
+
+    attachSession(response, user);
+
+    return response;
 
   } catch (error: any) {
     console.error('[Verify OTP Error]:', error);
