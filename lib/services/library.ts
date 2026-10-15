@@ -186,8 +186,17 @@ export function verifyQrSignature(library: ILibrary, k: unknown): boolean {
   return diff === 0;
 }
 
+/**
+ * Base URL for links a phone will open (the QR). Prefer the address the
+ * librarian is actually using — it is reachable by definition, while
+ * NEXT_PUBLIC_APP_URL can be stale (old domain). "localhost" is useless to a
+ * phone, so it falls back to NEXT_PUBLIC_APP_URL there.
+ */
 export function appBaseUrl(requestOrigin?: string): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || requestOrigin || 'http://localhost:3000').replace(/\/$/, '');
+  const origin = requestOrigin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(requestOrigin)
+    ? requestOrigin
+    : null;
+  return (origin || process.env.NEXT_PUBLIC_APP_URL || requestOrigin || 'http://localhost:3000').replace(/\/$/, '');
 }
 
 export function checkinUrl(library: ILibrary, requestOrigin?: string): string {
