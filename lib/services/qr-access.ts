@@ -46,17 +46,12 @@ async function expireIfDue(library: ILibrary, now: Date) {
 /** What the student page / librarian page should know, without throwing. */
 export async function qrAccessState(library: ILibrary, now = new Date()) {
   await expireIfDue(library, now);
+  // One paid service: when it's on, QR check-in and phone OTP both work
   const qr = library.status !== 'SUSPENDED' && library.accessStatus === 'ACTIVE' && Boolean(library.qrAttendanceEnabled);
   return {
     qrEnabled: qr,
-    otpEnabled: qr && Boolean(library.otpEnabled),
-    reason: (library.status === 'SUSPENDED'
-      ? 'LIBRARY_UNAVAILABLE'
-      : !qr
-      ? 'QR_DISABLED'
-      : !library.otpEnabled
-      ? 'OTP_DISABLED'
-      : null) as AccessDenial | null,
+    otpEnabled: qr,
+    reason: (library.status === 'SUSPENDED' ? 'LIBRARY_UNAVAILABLE' : !qr ? 'QR_DISABLED' : null) as AccessDenial | null,
   };
 }
 
@@ -233,8 +228,15 @@ export async function adminUpdateAccess(args: {
     monthlyOtpLimit: lib.monthlyOtpLimit ?? null,
   };
   const next = { ...before, ...args.patch };
-  if (next.otpEnabled && !next.qrAttendanceEnabled) {
-    throw new ApiError(400, 'Turn on QR attendance first — OTP only works with QR.');
+  // QR + OTP is one service: a single switch turns both on or off
+  const service = args.patch.qrAttendanceEnabled ?? args.patch.otpEnabled;
+  if (service !== undefined) {
+    next.qrAttendanceEnabled = service;
+    next.otpEnabled = service;
+    if (service && !args.patch.accessStatus) next.accessStatus = 'ACTIVE';
+  }
+  if (service && next.accessExpiresAt && new Date(next.accessExpiresAt) <= new Date()) {
+    throw new ApiError(400, 'The paid-until date has already passed. Set a new date (or clear it) to turn the service on.');
   }
   // Setting a future expiry on an EXPIRED library re-activates it unless told otherwise
   if (args.patch.accessExpiresAt && args.patch.accessExpiresAt > new Date() && !args.patch.accessStatus && lib.accessStatus === 'EXPIRED') {

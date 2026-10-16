@@ -46,7 +46,10 @@ interface StudentRow {
   /** Filled in on the page from the library's shifts */
   shift?: { name: string; startTime: string; endTime: string } | null;
   createdAt: string;
+  fees?: { fee: number; paid: number; due: number } | null;
 }
+
+const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 
 const baseColumns: ColumnDef<StudentRow>[] = [
   {
@@ -134,8 +137,23 @@ const baseColumns: ColumnDef<StudentRow>[] = [
   },
   {
     accessorKey: 'paymentStatus',
-    header: 'Payment Status',
+    header: 'Fees',
     cell: ({ row }) => {
+      const f = row.original.fees;
+      if (f) {
+        return (
+          <div className="space-y-1">
+            <p className="text-sm tabular-nums">
+              {rupees(f.paid)} <span className="text-muted-foreground">/ {rupees(f.fee)}</span>
+            </p>
+            {f.due > 0 ? (
+              <Badge className="bg-red-100 text-red-800 hover:bg-red-100">{rupees(f.due)} due</Badge>
+            ) : (
+              <Badge className="bg-green-100 text-green-800 hover:bg-green-100">Paid</Badge>
+            )}
+          </div>
+        );
+      }
       const status =
         row.getValue('paymentStatus') as string;
       const colorMap: Record<string, string> = {
@@ -175,7 +193,7 @@ export default function MembershipsPage() {
     try {
       setLoading(true);
       const [res, shiftRes]: any[] = await Promise.all([
-        api.getStudents(),
+        api.getStudents({ status: 'ACTIVE_MEMBER' }),
         // Shift names are optional garnish — never fail the page over them
         api.getShifts().catch(() => ({ data: [] })),
       ]);
@@ -212,11 +230,13 @@ export default function MembershipsPage() {
     fetchStudents();
   }, []);
 
-  // Filter only paid members on frontend
-  const paidMembers = useMemo(
+  // Every active member — part-paid ones too, so dues aren't hidden
+  const paidMembers = students;
+  const totals = useMemo(
     () =>
-      students.filter(
-        (s) => s.paymentStatus === 'paid'
+      students.reduce(
+        (t, s) => ({ paid: t.paid + (s.fees?.paid ?? 0), due: t.due + (s.fees?.due ?? 0) }),
+        { paid: 0, due: 0 }
       ),
     [students]
   );
@@ -317,9 +337,24 @@ export default function MembershipsPage() {
             Memberships
           </h1>
           <p className="text-muted-foreground">
-            Manage paid memberships and send
-            renewal reminders
+            Active members, what they paid and
+            what is still due, plus renewal reminders
           </p>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-xl border p-3">
+            <p className="text-xs text-muted-foreground">Active members</p>
+            <p className="text-xl font-bold tabular-nums">{students.length}</p>
+          </div>
+          <div className="rounded-xl border p-3">
+            <p className="text-xs text-muted-foreground">Fees received</p>
+            <p className="text-xl font-bold tabular-nums text-emerald-600">{rupees(totals.paid)}</p>
+          </div>
+          <a href="/librarian/students?tab=due" className={'rounded-xl border p-3 transition-colors hover:border-primary/50 ' + (totals.due > 0 ? 'border-red-500/30 bg-red-500/5' : '')}>
+            <p className="text-xs text-muted-foreground">Still due</p>
+            <p className={'text-xl font-bold tabular-nums ' + (totals.due > 0 ? 'text-red-600' : 'text-emerald-600')}>{rupees(totals.due)}</p>
+          </a>
         </div>
 
         <DataTable

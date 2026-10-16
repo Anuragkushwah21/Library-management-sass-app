@@ -15,7 +15,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { Pencil, Trash2 } from 'lucide-react';
+import { IndianRupee, Pencil, Trash2 } from 'lucide-react';
+import { FeesDialog, type FeeStudent } from '@/components/librarian/fees-dialog';
 import { api } from '@/lib/api';
 import { DemoStudentsPanel } from '@/components/librarian/demo-students-panel';
 import { ActivationDialog, type ActivatableStudent } from '@/components/librarian/activation-dialog';
@@ -30,12 +31,13 @@ import {
 type PaymentStatus = 'paid' | 'unpaid' | 'pending';
 type MembershipStatus = 'active' | 'inactive' | 'expired';
 
-type Tab = 'demo' | 'active' | 'ended' | 'expired' | 'blocked';
+type Tab = 'demo' | 'active' | 'due' | 'ended' | 'expired' | 'blocked';
 
 /** Each tab is just a status filter, so a status change moves the student (PLAN §2.1). */
-const TABS: { key: Tab; label: string; status?: string }[] = [
+const TABS: { key: Tab; label: string; status?: string; due?: boolean }[] = [
   { key: 'demo', label: 'Demo Students' },
   { key: 'active', label: 'All Students', status: 'ACTIVE_MEMBER' },
+  { key: 'due', label: 'Fees Due', status: 'ACTIVE_MEMBER,EXPIRED', due: true },
   { key: 'ended', label: 'Demo Ended' },
   { key: 'expired', label: 'Expired', status: 'EXPIRED' },
   { key: 'blocked', label: 'Blocked', status: 'BLOCKED' },
@@ -52,7 +54,11 @@ interface StudentRow {
   membershipEndDate?: string | null;
   createdAt: string;
   seatNumber?: number | null;
+  /** Fee totals over all membership periods; null = no fee recorded yet */
+  fees?: { fee: number; paid: number; due: number } | null;
 }
+
+const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 
 type SeatStatus = 'available' | 'reserved' | 'occupied';
 
@@ -68,6 +74,7 @@ interface SeatRow {
 export default function StudentsPage() {
   const [tab, setTab] = useState<Tab>('active');
   const [renewing, setRenewing] = useState<ActivatableStudent | null>(null);
+  const [feesFor, setFeesFor] = useState<FeeStudent | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -110,6 +117,7 @@ export default function StudentsPage() {
       if (search) params.search = search;
       const tabStatus = TABS.find((t) => t.key === tab)?.status;
       if (tabStatus) params.status = tabStatus;
+      if (TABS.find((t) => t.key === tab)?.due) params.due = '1';
       params.page = pageArg ?? page;
       params.pageSize = pageSizeArg ?? pageSize;
 
@@ -298,7 +306,8 @@ export default function StudentsPage() {
     } = {
       name: editForm.name.trim(),
       phone: editForm.phone.trim(),
-      paymentStatus: editForm.paymentStatus,
+      // Students with fee records get their status from the fees, never by hand
+      ...(student.fees ? {} : { paymentStatus: editForm.paymentStatus }),
     };
 
     if (editForm.membershipEndDate) {
@@ -421,8 +430,23 @@ export default function StudentsPage() {
       },
       {
         accessorKey: 'paymentStatus',
-        header: 'Payment',
+        header: 'Fees',
         cell: ({ row }) => {
+          const f = row.original.fees;
+          if (f) {
+            return (
+              <button type="button" className="text-left" onClick={() => setFeesFor(row.original)}>
+                <span className="block text-sm tabular-nums">
+                  {rupees(f.paid)} <span className="text-muted-foreground">/ {rupees(f.fee)}</span>
+                </span>
+                {f.due > 0 ? (
+                  <Badge className="bg-red-100 text-red-800 hover:bg-red-100">{rupees(f.due)} due</Badge>
+                ) : (
+                  <Badge className="bg-green-100 text-green-800 hover:bg-green-100">Paid</Badge>
+                )}
+              </button>
+            );
+          }
           const status =
             row.getValue('paymentStatus') as string;
           const colorMap: Record<string, string> = {
@@ -471,8 +495,19 @@ export default function StudentsPage() {
                 </>
               ) : (
                 <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button size="sm" variant={student.fees?.due ? 'default' : 'outline'} onClick={() => setFeesFor(student)}>
+                        <IndianRupee className="h-4 w-4" />
+                        <span className="ml-1 hidden sm:inline">{student.fees?.due ? 'Collect' : 'Fees'}</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Collect fee, see what&apos;s paid and due, print receipts.</p>
+                    </TooltipContent>
+                  </Tooltip>
                   {tab === 'expired' && (
-                    <Button size="sm" onClick={() => setRenewing(student as any)}>
+                    <Button size="sm" onClick={() => setRenewing({ ...student, status: student.status ?? 'EXPIRED' } as any)}>
                       Renew
                     </Button>
                   )}
@@ -575,6 +610,17 @@ export default function StudentsPage() {
         ) : (
         <>
 
+        {tab === 'due' && !loading && (
+          <div className="flex flex-wrap items-baseline gap-x-2 rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3">
+            <span className="text-xl font-bold tabular-nums text-red-600">
+              {rupees(students.reduce((sum, st) => sum + (st.fees?.due ?? 0), 0))}
+            </span>
+            <span className="text-sm text-muted-foreground">
+              pending from {students.length} student{students.length === 1 ? '' : 's'} — tap Collect to take a payment and print the receipt.
+            </span>
+          </div>
+        )}
+
         <div className="w-full max-w-sm">
           <Input
             placeholder="Search by name or email..."
@@ -669,6 +715,14 @@ export default function StudentsPage() {
                 </Select>
               </div>
 
+              {students.find((x) => x._id === editingId)?.fees ? (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium">Payment</label>
+                  <p className="text-xs text-muted-foreground">
+                    Worked out from the fees. Use the <strong>₹ Fees</strong> button to collect.
+                  </p>
+                </div>
+              ) : (
               <div className="space-y-1">
                 <label className="text-sm font-medium">
                   Payment status
@@ -686,6 +740,7 @@ export default function StudentsPage() {
                   </option>
                 </select>
               </div>
+              )}
             </div>
             <div className="flex gap-2 pt-2">
               <Button
@@ -776,6 +831,16 @@ export default function StudentsPage() {
         </>
         )}
       </div>
+
+      <FeesDialog
+        student={feesFor}
+        onClose={() => setFeesFor(null)}
+        onChanged={() => fetchStudents(searchTerm || undefined, page, pageSize)}
+        onRenew={(st) => {
+          setFeesFor(null);
+          setRenewing(st);
+        }}
+      />
 
       <ActivationDialog
         student={renewing}

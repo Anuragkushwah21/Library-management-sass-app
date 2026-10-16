@@ -13,6 +13,9 @@ import { expireDemos } from '@/lib/services/demo';
 import { Attendance } from '@/lib/models/Attendance';
 import { notifyLibrary } from '@/lib/services/notify';
 import mongoose from 'mongoose';
+import { Membership } from '@/lib/models/Membership';
+import { Library } from '@/lib/models/Library';
+import { feeSummaries, recordJoiningFee } from '@/lib/services/membership';
 
 export const runtime = 'nodejs';
 
@@ -73,7 +76,17 @@ export async function GET(request: NextRequest) {
       ];
     }
 
-    const students = await Student.find(query).sort({ createdAt: -1 });
+    // Fees Due list: students with any unpaid balance
+    const ownLibraryId = decoded.role === 'librarian' ? await libraryIdFor(decoded) : null;
+    if (searchParams.get('due') === '1' && ownLibraryId) {
+      const owing = await Membership.distinct('studentId', { libraryId: ownLibraryId, status: { $ne: 'CANCELLED' }, dueAmount: { $gt: 0 } });
+      query._id = { $in: owing };
+    }
+
+    const found = await Student.find(query).sort({ createdAt: -1 });
+    // Each row carries its fee totals: { fee, paid, due } (null = no fee recorded yet)
+    const fees = ownLibraryId ? await feeSummaries(ownLibraryId, found.map((st) => st._id)) : new Map();
+    const students = found.map((st) => ({ ...st.toObject(), fees: fees.get(String(st._id)) ?? null }));
 
     // Demo lists show how often each student came and when they last did
     if (searchParams.get('withStats') === '1' && students.length) {
@@ -84,7 +97,7 @@ export async function GET(request: NextRequest) {
       const byId = new Map(stats.map((x: any) => [String(x._id), x]));
       const data = students.map((st) => {
         const x = byId.get(String(st._id));
-        return { ...st.toObject(), attendanceCount: x?.count ?? 0, lastVisit: x?.last ?? null };
+        return { ...st, attendanceCount: x?.count ?? 0, lastVisit: x?.last ?? null };
       });
       return NextResponse.json({ success: true, data });
     }
@@ -115,6 +128,23 @@ export async function POST(request: NextRequest) {
       seatNumber,
       shiftId,
     } = body;
+
+    // Optional joining fee (Add Member): validated before anything is saved
+    const hasFee = body.fee !== undefined && body.fee !== null && body.fee !== '';
+    const fee = hasFee ? Number(body.fee) : 0;
+    const paidNow = hasFee ? Number(body.paidAmount ?? 0) : 0;
+    const method = ['CASH', 'UPI', 'BANK_TRANSFER'].includes(body.method) ? body.method : 'CASH';
+    if (hasFee) {
+      if (!Number.isInteger(fee) || fee <= 0) {
+        return NextResponse.json({ success: false, error: 'Fee must be a whole amount in rupees.' }, { status: 400 });
+      }
+      if (!Number.isInteger(paidNow) || paidNow < 0) {
+        return NextResponse.json({ success: false, error: 'Paid amount must be a whole amount in rupees.' }, { status: 400 });
+      }
+      if (paidNow > fee) {
+        return NextResponse.json({ success: false, error: 'Paid amount can’t be more than the fee.' }, { status: 400 });
+      }
+    }
     // NOTE: libraryId is never read from the body — it comes from the session
 
     const libraryId = await libraryIdFor(decoded);
@@ -213,14 +243,19 @@ export async function POST(request: NextRequest) {
 
     const now = new Date();
 
-    // paymentStatus ka effective value
-    const effectivePaymentStatus: 'paid' | 'unpaid' | 'pending' =
-      paymentStatus || 'unpaid';
+    // With a fee, payment status comes from the amounts; validity from the dates
+    const effectivePaymentStatus: 'paid' | 'unpaid' | 'pending' = hasFee
+      ? paidNow >= fee
+        ? 'paid'
+        : paidNow > 0
+        ? 'pending'
+        : 'unpaid'
+      : paymentStatus || 'unpaid';
 
     // membershipStatus auto-calc
     let membershipStatus: 'active' | 'inactive' | 'expired' = 'inactive';
 
-    if (effectivePaymentStatus === 'paid' && endDate) {
+    if ((effectivePaymentStatus === 'paid' || hasFee) && endDate) {
       if (endDate.getTime() <= now.getTime()) {
         membershipStatus = 'expired';
       } else {
@@ -249,8 +284,34 @@ export async function POST(request: NextRequest) {
       librarianId: userId,
     });
 
+    let payment = null;
+    if (hasFee) {
+      try {
+        const library = await Library.findById(libraryId);
+        if (!library) throw new Error('Library not found');
+        const result = await recordJoiningFee({
+          library,
+          actorId: userId,
+          student,
+          input: {
+            planName: typeof body.planName === 'string' ? body.planName : null,
+            fee,
+            paidAmount: paidNow,
+            method,
+            reference: typeof body.reference === 'string' ? body.reference.trim().slice(0, 80) : undefined,
+            requestId: typeof body.requestId === 'string' && body.requestId.length >= 8 ? body.requestId.slice(0, 64) : `join-${student._id}`,
+          },
+        });
+        payment = result.payment;
+      } catch (err) {
+        // Never leave a member behind without the fee the librarian entered
+        await Student.deleteOne({ _id: student._id });
+        throw err;
+      }
+    }
+
     return NextResponse.json(
-      { success: true, message: 'Student created', data: student },
+      { success: true, message: 'Student created', data: student, payment },
       { status: 201 }
     );
   } catch (error) {

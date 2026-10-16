@@ -228,6 +228,7 @@ import { StudentChart } from '@/components/librarian/student-chart';
 import { PaymentChart } from '@/components/librarian/payment-chart';
 import { RecentActivity } from '@/components/librarian/recent-activity';
 import { TodayAttendanceCard } from '@/components/librarian/today-attendance-card';
+import { FeesOverviewCard, type FeesOverview } from '@/components/librarian/fees-overview-card';
 import { Users, CreditCard, Armchair, BookOpen, UserPlus, ClipboardCheck } from 'lucide-react';
 import Link from 'next/link';
 import { useToast } from '@/hooks/use-toast';
@@ -270,6 +271,7 @@ type DashboardApiResponse = {
     studentChart: StudentChartPoint[];
     paymentChart: PaymentPoint[];
     activities: ActivityItem[];
+    fees: FeesOverview | null;
   };
   error?: string;
 };
@@ -281,6 +283,7 @@ export default function DashboardClient() {
   const [studentData, setStudentData] = useState<StudentChartPoint[]>([]);
   const [paymentData, setPaymentData] = useState<PaymentPoint[]>([]);
   const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [fees, setFees] = useState<FeesOverview | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchDashboard = async () => {
@@ -302,6 +305,7 @@ export default function DashboardClient() {
       setStudentData(json.data.studentChart || []);
       setPaymentData(json.data.paymentChart || []);
       setActivities(json.data.activities || []);
+      setFees(json.data.fees ?? null);
     } catch (error: any) {
       console.error('[Dashboard] fetch error:', error);
       toast({
@@ -401,6 +405,8 @@ export default function DashboardClient() {
           </Link>
         ))}
       </div>
+
+      {fees && <FeesOverviewCard fees={fees} />}
 
       <TodayAttendanceCard />
 

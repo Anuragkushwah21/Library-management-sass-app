@@ -1,4 +1,5 @@
 // app/api/students/[id]/route.ts
+import { Membership } from '@/lib/models/Membership';
 import { normalizePhone } from '@/lib/phone';
 import { deriveMemberStatus } from '@/lib/services/student-status';
 import { Shift } from '@/lib/models/Shift';
@@ -172,8 +173,10 @@ export async function PUT(
       updateData.status = deriveMemberStatus(null, membershipEndDate ?? existingStudent.membershipEndDate);
     }
 
-    // paymentStatus + membershipStatus tie
-    if (paymentStatus !== undefined) {
+    // paymentStatus + membershipStatus tie — only for students without fee
+    // records; once fees are tracked the status is derived from what's owed
+    const tracksFees = paymentStatus !== undefined && (await Membership.exists({ studentId: existingStudent._id, status: { $ne: 'CANCELLED' } }));
+    if (paymentStatus !== undefined && !tracksFees) {
       updateData.paymentStatus = paymentStatus;
 
       if (paymentStatus === 'paid') {

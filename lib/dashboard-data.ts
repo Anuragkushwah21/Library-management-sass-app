@@ -18,7 +18,7 @@ export interface StudentChartPoint {
 }
 
 export interface PaymentStatusPoint {
-  label: 'Paid' | 'Unpaid' | 'Pending';
+  label: 'Paid' | 'Unpaid' | 'Part paid';
   value: number;
 }
 
@@ -42,7 +42,7 @@ export async function fetchDashboardStats(
   const [totalStudents, paidMembers, seatsAvailable, booksIssued] =
     await Promise.all([
       Student.countDocuments({ librarianId }),
-      Student.countDocuments({ librarianId, paymentStatus: 'paid' }),
+      Student.countDocuments({ librarianId, status: 'ACTIVE_MEMBER', archivedAt: null, paymentStatus: 'paid' }),
       Seat.countDocuments({ librarianId, status: 'available' }),
 
       // ✅ FIX: issued books from Transaction model
@@ -108,17 +108,26 @@ export async function fetchPaymentStatusData(
     throw new Error('librarianId is required for fetchPaymentStatusData');
   }
 
+  // Members only — demo students haven't been asked to pay yet
+  const members = { librarianId, status: { $in: ['ACTIVE_MEMBER', 'EXPIRED'] }, archivedAt: null };
   const [paid, unpaid, pending] = await Promise.all([
-    Student.countDocuments({ librarianId, paymentStatus: 'paid' }),
-    Student.countDocuments({ librarianId, paymentStatus: 'unpaid' }),
-    Student.countDocuments({ librarianId, paymentStatus: 'pending' }),
+    Student.countDocuments({ ...members, paymentStatus: 'paid' }),
+    Student.countDocuments({ ...members, paymentStatus: 'unpaid' }),
+    Student.countDocuments({ ...members, paymentStatus: 'pending' }),
   ]);
 
   return [
     { label: 'Paid', value: paid },
     { label: 'Unpaid', value: unpaid },
-    { label: 'Pending', value: pending },
+    { label: 'Part paid', value: pending },
   ];
+}
+
+/** Records without a createdAt (old imports) fall back to the ObjectId's time instead of crashing. */
+function isoOrIdTime(doc: any): string {
+  const d = doc.createdAt ? new Date(doc.createdAt) : null;
+  if (d && !Number.isNaN(d.getTime())) return d.toISOString();
+  return typeof doc._id?.getTimestamp === 'function' ? doc._id.getTimestamp().toISOString() : new Date(0).toISOString();
 }
 
 // ---------- Recent activity (per librarian) ----------
@@ -147,19 +156,13 @@ export async function fetchRecentActivity(
       id: `student-${s._id.toString()}`,
       type: 'student' as const,
       description: `New student added: ${s.name}`,
-      createdAt:
-        s.createdAt instanceof Date
-          ? s.createdAt.toISOString()
-          : new Date(s.createdAt).toISOString(),
+      createdAt: isoOrIdTime(s),
     })),
     ...books.map((b: any) => ({
       id: `book-${b._id.toString()}`,
       type: 'book' as const,
       description: `Book "${b.title}" added/updated`,
-      createdAt:
-        b.createdAt instanceof Date
-          ? b.createdAt.toISOString()
-          : new Date(b.createdAt).toISOString(),
+      createdAt: isoOrIdTime(b),
     })),
   ];
 

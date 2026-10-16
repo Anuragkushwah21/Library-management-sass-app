@@ -188,9 +188,7 @@ export default function AdminQrAccessPage() {
                 <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
                     <th className="px-4 py-2.5 font-medium">Library</th>
-                    <th className="px-4 py-2.5 font-medium">QR</th>
-                    <th className="px-4 py-2.5 font-medium">OTP</th>
-                    <th className="px-4 py-2.5 font-medium">Access</th>
+                    <th className="px-4 py-2.5 font-medium">QR + OTP service</th>
                     <th className="px-4 py-2.5 font-medium">Credits</th>
                     <th className="px-4 py-2.5 font-medium">This month</th>
                     <th className="px-4 py-2.5" />
@@ -206,11 +204,15 @@ export default function AdminQrAccessPage() {
                         </div>
                         <div className="text-xs text-muted-foreground">{r.owner?.email ?? '—'}</div>
                       </td>
-                      <td className="px-4 py-3">{r.qrAttendanceEnabled ? <Badge variant="outline" className="border-emerald-600 text-emerald-700">On</Badge> : <span className="text-muted-foreground">Off</span>}</td>
-                      <td className="px-4 py-3">{r.otpEnabled ? <Badge variant="outline" className="border-emerald-600 text-emerald-700">On</Badge> : <span className="text-muted-foreground">Off</span>}</td>
                       <td className="px-4 py-3">
-                        <Badge className={STATUS_BADGE[r.accessStatus]}>{r.accessStatus.toLowerCase()}</Badge>
-                        {r.accessExpiresAt && <div className="mt-1 text-xs text-muted-foreground">until {format(new Date(r.accessExpiresAt), 'd MMM yyyy')}</div>}
+                        {r.accessStatus !== 'ACTIVE' ? (
+                          <Badge className={STATUS_BADGE[r.accessStatus]}>{r.accessStatus.toLowerCase()}</Badge>
+                        ) : r.qrAttendanceEnabled ? (
+                          <Badge className="bg-emerald-600 hover:bg-emerald-600">On</Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-muted-foreground">Off</Badge>
+                        )}
+                        {r.accessExpiresAt && <div className="mt-1 text-xs text-muted-foreground">paid until {format(new Date(r.accessExpiresAt), 'd MMM yyyy')}</div>}
                       </td>
                       <td className={cn('px-4 py-3 font-semibold tabular-nums', r.smsCreditBalance === 0 ? 'text-rose-600' : r.smsCreditBalance <= 10 ? 'text-amber-600' : '')}>
                         {r.smsCreditBalance}
@@ -242,7 +244,7 @@ export default function AdminQrAccessPage() {
 function ManageSheet({ libraryId, onClose, onChanged }: { libraryId: string | null; onClose: () => void; onChanged: () => void }) {
   const { toast } = useToast();
   const [detail, setDetail] = useState<any>(null);
-  const [form, setForm] = useState({ qr: false, otp: false, status: 'ACTIVE', expires: '', limit: '', note: '' });
+  const [form, setForm] = useState({ on: false, expires: '', limit: '', note: '' });
   const [credit, setCredit] = useState({ amount: '', note: '' });
   const [creditReq, setCreditReq] = useState(newRequestId);
   const [busy, setBusy] = useState<'save' | 'credit' | null>(null);
@@ -255,9 +257,7 @@ function ManageSheet({ libraryId, onClose, onChanged }: { libraryId: string | nu
       const lib = res.data.library;
       setDetail(res.data);
       setForm({
-        qr: Boolean(lib.qrAttendanceEnabled),
-        otp: Boolean(lib.otpEnabled),
-        status: lib.accessStatus ?? 'ACTIVE',
+        on: Boolean(lib.qrAttendanceEnabled) && (lib.accessStatus ?? 'ACTIVE') === 'ACTIVE',
         expires: lib.accessExpiresAt ? String(lib.accessExpiresAt).slice(0, 10) : '',
         limit: lib.monthlyOtpLimit ? String(lib.monthlyOtpLimit) : '',
         note: '',
@@ -284,14 +284,13 @@ function ManageSheet({ libraryId, onClose, onChanged }: { libraryId: string | nu
     setBusy('save');
     try {
       await api.adminUpdateQrAccess(libraryId, {
-        qrAttendanceEnabled: form.qr,
-        otpEnabled: form.qr && form.otp,
-        accessStatus: form.status,
+        // One switch: on = QR check-in + phone OTP; off = both stop
+        qrAttendanceEnabled: form.on,
         accessExpiresAt: form.expires ? new Date(`${form.expires}T23:59:59`).toISOString() : null,
         monthlyOtpLimit: form.limit ? Number(form.limit) : null,
         note: form.note.trim(),
       });
-      toast({ title: 'Access updated', description: 'The librarian has been notified.' });
+      toast({ title: form.on ? 'Service is on' : 'Service is off', description: 'The librarian has been notified.' });
       await load();
       onChanged();
     } catch (err: any) {
@@ -348,36 +347,30 @@ function ManageSheet({ libraryId, onClose, onChanged }: { libraryId: string | nu
         ) : (
           <div className="space-y-6 px-4 pb-8">
             <form onSubmit={save} className="space-y-4 rounded-xl border p-4">
-              <h3 className="font-semibold">Access</h3>
-              <label className="flex items-center justify-between gap-3 text-sm">
-                <span>QR attendance</span>
-                <Switch checked={form.qr} onCheckedChange={(v) => setForm({ ...form, qr: v, otp: v ? form.otp : false })} />
-              </label>
-              <label className="flex items-center justify-between gap-3 text-sm">
+              <h3 className="font-semibold">Service</h3>
+              <label
+                className={cn(
+                  'flex items-center justify-between gap-3 rounded-lg border p-3 text-sm transition-colors',
+                  form.on ? 'border-emerald-500/40 bg-emerald-500/5' : 'bg-muted/40'
+                )}
+              >
                 <span>
-                  OTP for new phones
-                  <span className="block text-xs text-muted-foreground">Off = only already-verified phones can check in</span>
+                  <span className="font-medium">QR attendance + phone OTP</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {form.on ? 'On — students scan the QR, verify their phone and check in.' : 'Off — the library uses manual attendance only.'}
+                  </span>
                 </span>
-                <Switch checked={form.otp} disabled={!form.qr} onCheckedChange={(v) => setForm({ ...form, otp: v })} />
+                <Switch checked={form.on} onCheckedChange={(v) => setForm({ ...form, on: v })} aria-label="QR + OTP service" />
               </label>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="acc-status">Status</Label>
-                  <select
-                    id="acc-status"
-                    className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-                    value={form.status}
-                    onChange={(e) => setForm({ ...form, status: e.target.value })}
-                  >
-                    <option value="ACTIVE">Active</option>
-                    <option value="SUSPENDED">Suspended</option>
-                    <option value="EXPIRED">Expired</option>
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="acc-exp">Paid until (optional)</Label>
-                  <Input id="acc-exp" type="date" value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })} />
-                </div>
+              {lib && lib.accessStatus !== 'ACTIVE' && (
+                <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                  {lib.accessStatus === 'EXPIRED' ? 'The paid period has ended.' : 'Access is suspended.'} Set a new paid-until date and switch the service on after payment.
+                </p>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="acc-exp">Paid until (optional)</Label>
+                <Input id="acc-exp" type="date" value={form.expires} onChange={(e) => setForm({ ...form, expires: e.target.value })} />
+                <p className="text-xs text-muted-foreground">The service switches itself off after this date until it's renewed.</p>
               </div>
               <div className="space-y-1.5">
                 <Label htmlFor="acc-limit">Monthly OTP limit</Label>

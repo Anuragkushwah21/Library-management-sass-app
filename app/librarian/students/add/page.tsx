@@ -28,7 +28,12 @@ import {
   Clock,
   Armchair,
   Loader2,
+  IndianRupee,
+  Printer,
+  CheckCircle2,
 } from 'lucide-react';
+import { addDays, addMonths, format } from 'date-fns';
+import { openReceipt } from '@/components/librarian/fees-dialog';
 import { toast } from 'react-toastify';
 
 type PaymentStatus = 'paid' | 'unpaid' | 'pending';
@@ -54,17 +59,57 @@ interface Student {
 
 const NO_SEAT = '__none__';
 
+const PLANS = [
+  { key: 'monthly', label: 'Monthly', months: 1 },
+  { key: 'quarterly', label: 'Quarterly', months: 3 },
+  { key: 'yearly', label: 'Yearly', months: 12 },
+  { key: 'custom', label: 'Custom', months: 0 },
+] as const;
+type PlanKey = (typeof PLANS)[number]['key'];
+
+const METHODS = [
+  { value: 'CASH', label: 'Cash' },
+  { value: 'UPI', label: 'UPI' },
+  { value: 'BANK_TRANSFER', label: 'Bank transfer' },
+] as const;
+
+/** Inclusive end: 1 month from 16 Oct ends 15 Nov. */
+const planEnd = (start: string, months: number) =>
+  format(addDays(addMonths(new Date(`${start}T00:00:00`), months), -1), 'yyyy-MM-dd');
+const newRequestId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+
 export default function AddStudentPage() {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     phone: '',
-    membershipStartDate: '',
-    membershipEndDate: '',
-    paymentStatus: 'unpaid' as PaymentStatus,
+    membershipStartDate: todayInput(),
+    membershipEndDate: planEnd(todayInput(), 1),
     address: '',
     shiftId: '',
   });
+  // Joining fee — recorded with the member, receipt generated when anything is paid
+  const [plan, setPlan] = useState<PlanKey>('monthly');
+  const [fee, setFee] = useState('');
+  const [paid, setPaid] = useState('');
+  const [method, setMethod] = useState<(typeof METHODS)[number]['value']>('CASH');
+  const [reference, setReference] = useState('');
+  const [requestId, setRequestId] = useState(newRequestId);
+  const [added, setAdded] = useState<{ name: string; paymentId: string | null; receipt: string | null; paid: number; due: number } | null>(null);
+
+  const feeNum = Number(fee || 0);
+  const paidNum = paid === '' ? feeNum : Number(paid);
+  const due = Math.max(0, feeNum - paidNum);
+
+  const choosePlan = (key: PlanKey) => {
+    setPlan(key);
+    const p = PLANS.find((x) => x.key === key)!;
+    if (p.months && formData.membershipStartDate) {
+      setFormData((prev) => ({ ...prev, membershipEndDate: planEnd(prev.membershipStartDate, p.months) }));
+    }
+  };
   const [shifts, setShifts] = useState<{ _id: string; name: string; startTime: string; endTime: string }[]>([]);
 
   const [isLoading, setIsLoading] = useState(false);
@@ -74,7 +119,14 @@ export default function AddStudentPage() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setFormData((prev) => {
+      const next = { ...prev, [name]: value };
+      // Start date moves the end date along with the chosen plan
+      const p = PLANS.find((x) => x.key === plan)!;
+      if (name === 'membershipStartDate' && value && p.months) next.membershipEndDate = planEnd(value, p.months);
+      return next;
+    });
+    if (name === 'membershipEndDate') setPlan('custom');
   };
 
   const fetchAvailableSeats = async () => {
@@ -135,11 +187,35 @@ export default function AddStudentPage() {
       return;
     }
 
+    if (!fee || !Number.isInteger(feeNum) || feeNum <= 0) {
+      toast.error('Enter the total fee in whole rupees.');
+      return;
+    }
+    if (!Number.isInteger(paidNum) || paidNum < 0 || paidNum > feeNum) {
+      toast.error('Paid amount must be a whole number, not more than the fee.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      const res: any = await api.createStudent(formData);
+      const res: any = await api.createStudent({
+        ...formData,
+        planName: PLANS.find((p) => p.key === plan)!.label,
+        fee: feeNum,
+        paidAmount: paidNum,
+        method,
+        reference: reference.trim() || undefined,
+        requestId,
+      });
       const createdStudent: Student = res.data || res;
+      setAdded({
+        name: createdStudent.name,
+        paymentId: res.payment?._id ?? null,
+        receipt: res.payment?.receiptNumber ?? null,
+        paid: paidNum,
+        due,
+      });
 
       if (selectedSeat && selectedSeat !== NO_SEAT) {
         const seatNumber = Number(selectedSeat);
@@ -173,13 +249,18 @@ export default function AddStudentPage() {
         name: '',
         email: '',
         phone: '',
-        membershipStartDate: '',
-        membershipEndDate: '',
-        paymentStatus: 'unpaid',
+        membershipStartDate: todayInput(),
+        membershipEndDate: planEnd(todayInput(), PLANS.find((p) => p.key === plan)!.months || 1),
         address: '',
         // Keep the shift — the next student is usually on the same one
         shiftId: formData.shiftId,
       });
+      if (plan === 'custom') setPlan('monthly');
+      setFee('');
+      setPaid('');
+      setReference('');
+      setRequestId(newRequestId());
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       setSelectedSeat(NO_SEAT);
       fetchAvailableSeats();
     } catch (error: any) {
@@ -208,6 +289,22 @@ export default function AddStudentPage() {
           </Link>
         </Button>
       </div>
+
+      {added && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm">
+          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+          <p className="min-w-0 flex-1">
+            <strong>{added.name}</strong> added.{' '}
+            {added.receipt ? `Receipt ${added.receipt} · paid ${rupees(added.paid)}` : 'No payment taken yet'}
+            {added.due > 0 ? ` · ${rupees(added.due)} due` : ' · fully paid'}
+          </p>
+          {added.paymentId && (
+            <Button size="sm" variant="outline" type="button" onClick={() => openReceipt(added.paymentId!)}>
+              <Printer className="mr-1.5 h-4 w-4" /> Print receipt
+            </Button>
+          )}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* ---------- Personal details ---------- */}
@@ -308,6 +405,17 @@ export default function AddStudentPage() {
           </CardHeader>
 
           <CardContent className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2 sm:col-span-2">
+              <Label className="text-sm font-medium">Plan</Label>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {PLANS.map((p) => (
+                  <Button key={p.key} type="button" size="sm" variant={plan === p.key ? 'default' : 'outline'} onClick={() => choosePlan(p.key)} disabled={isLoading}>
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
             <Field id="membershipStartDate" label="Start Date" required>
               <Input
                 id="membershipStartDate"
@@ -339,33 +447,6 @@ export default function AddStudentPage() {
             </Field>
 
             <Field
-              id="paymentStatus"
-              label="Payment Status"
-              icon={<CreditCard className="h-4 w-4" />}
-              hint="Status must be 'Paid' before books can be issued."
-            >
-              <Select
-                value={formData.paymentStatus}
-                onValueChange={(value) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    paymentStatus: value as PaymentStatus,
-                  }))
-                }
-                disabled={isLoading}
-              >
-                <SelectTrigger id="paymentStatus" className="pl-9">
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="paid">Paid</SelectItem>
-                  <SelectItem value="unpaid">Unpaid</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-
-            <Field
               id="shiftId"
               label="Shift"
               icon={<Clock className="h-4 w-4" />}
@@ -388,6 +469,55 @@ export default function AddStudentPage() {
                 </SelectContent>
               </Select>
             </Field>
+          </CardContent>
+        </Card>
+
+        {/* ---------- Fee ---------- */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <IndianRupee className="h-4 w-4 text-muted-foreground" />
+              Fee
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-2">
+            <Field id="fee" label="Total fee (₹)" required>
+              <Input id="fee" type="number" inputMode="numeric" min={1} step={1} placeholder="e.g. 800" value={fee} onChange={(e) => setFee(e.target.value)} required disabled={isLoading} />
+            </Field>
+            <Field id="paid" label="Paid now (₹)" hint="Leave empty if the full fee is paid. Enter 0 if nothing is paid yet.">
+              <Input id="paid" type="number" inputMode="numeric" min={0} step={1} placeholder={fee || '0'} value={paid} onChange={(e) => setPaid(e.target.value)} disabled={isLoading} />
+            </Field>
+            <Field id="method" label="Payment method">
+              <Select value={method} onValueChange={(v) => setMethod(v as any)} disabled={isLoading || paidNum === 0}>
+                <SelectTrigger id="method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {METHODS.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field id="reference" label="Reference (optional)">
+              <Input id="reference" placeholder="UPI / txn ID" value={reference} onChange={(e) => setReference(e.target.value)} disabled={isLoading || paidNum === 0} />
+            </Field>
+            {fee && feeNum > 0 && (
+              <p
+                className={
+                  'rounded-md px-3 py-2 text-sm sm:col-span-2 ' +
+                  (due > 0 ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300' : 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300')
+                }
+              >
+                {paidNum === 0
+                  ? `Nothing paid now — ${rupees(feeNum)} will be due. Collect it later from Students → Fees Due.`
+                  : due > 0
+                  ? `Paid ${rupees(paidNum)} now — ${rupees(due)} will stay due. A receipt is generated.`
+                  : `Fully paid — a receipt for ${rupees(feeNum)} is generated.`}
+              </p>
+            )}
           </CardContent>
         </Card>
 

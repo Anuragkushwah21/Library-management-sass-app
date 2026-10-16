@@ -49,7 +49,8 @@ export default async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   const isAdminRoute = pathname.startsWith(ADMIN_PREFIX);
-  const isLibrarianRoute = pathname.startsWith(LIBRARIAN_PREFIX);
+  // Printable receipts live outside the dashboard layout but are librarian-only
+  const isLibrarianRoute = pathname.startsWith(LIBRARIAN_PREFIX) || pathname.startsWith('/receipt/');
 
   if (!isAdminRoute && !isLibrarianRoute) {
     return NextResponse.next();
@@ -73,5 +74,5 @@ export default async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/admin/:path*', '/librarian/:path*'],
+  matcher: ['/admin/:path*', '/librarian/:path*', '/receipt/:path*'],
 };

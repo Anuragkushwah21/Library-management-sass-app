@@ -412,6 +412,20 @@ export const api = {
     }
   ) => apiFetch(`/api/students/${id}/activate`, { method: 'POST', body: JSON.stringify(data) }),
   getIdProofLink: (id: string) => apiFetch(`/api/students/${id}/id-proof`),
+  getStudentFees: (id: string) => apiFetch(`/api/students/${id}/fees`),
+  collectPayment: (
+    id: string,
+    data: {
+      membershipId?: string | null;
+      amount: number;
+      method: 'CASH' | 'UPI' | 'BANK_TRANSFER';
+      reference?: string;
+      requestId: string;
+      fee?: number | null;
+      planName?: string | null;
+    }
+  ) => apiFetch(`/api/students/${id}/fees`, { method: 'POST', body: JSON.stringify(data) }),
+  getReceipt: (paymentId: string) => apiFetch(`/api/payments/${paymentId}/receipt`),
 
   // ========== LIBRARIAN DASHBOARD ==========
   getDashboardStats: () => apiFetch('/api/dashboard'),

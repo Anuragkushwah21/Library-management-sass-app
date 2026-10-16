@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { addDays, addMonths, format } from 'date-fns';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import { CheckCircle2, Loader2, Printer } from 'lucide-react';
+import { openReceipt } from '@/components/librarian/fees-dialog';
 import { toast } from 'react-toastify';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +26,8 @@ export interface ActivatableStudent {
   phone: string;
   status: string;
   seatNumber?: number | null;
+  /** Set for members renewing: an active member's next period starts the day after */
+  membershipEndDate?: string | null;
 }
 
 const PLANS = [
@@ -72,14 +75,17 @@ export function ActivationDialog({
   const [requestId, setRequestId] = useState(newRequestId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ receipt: string; due: number } | null>(null);
+  const [done, setDone] = useState<{ paymentId: string; receipt: string; paid: number; due: number } | null>(null);
 
   const needsSeat = Boolean(student && !student.seatNumber);
+  const renewal = student?.status === 'ACTIVE_MEMBER' || student?.status === 'EXPIRED';
 
   // Fresh form (and a fresh request id) every time it opens
   useEffect(() => {
     if (!student) return;
-    const t = todayInput();
+    // An active member renewing early continues from the day after the current end
+    const currentEnd = student.status === 'ACTIVE_MEMBER' && student.membershipEndDate ? iso(new Date(student.membershipEndDate)) : null;
+    const t = currentEnd && currentEnd >= todayInput() ? iso(addDays(new Date(`${currentEnd}T00:00:00`), 1)) : todayInput();
     setPlan('monthly');
     setStart(t);
     setEnd(planEnd(t, 1));
@@ -134,7 +140,12 @@ export function ActivationDialog({
         requestId,
       });
       toast.success('Membership activated successfully.');
-      setDone({ receipt: res.data?.payment?.receiptNumber ?? '—', due: res.data?.payment?.dueAmount ?? due });
+      setDone({
+        paymentId: res.data?.payment?._id,
+        receipt: res.data?.payment?.receiptNumber ?? '—',
+        paid: res.data?.payment?.paidAmount ?? paidNum,
+        due: res.data?.payment?.dueAmount ?? due,
+      });
       onDone();
     } catch (err: any) {
       setError(err.message);
@@ -149,7 +160,7 @@ export function ActivationDialog({
         {student && done ? (
           <div className="space-y-4 py-2 text-center">
             <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-600" />
-            <DialogTitle className="text-xl">Membership activated</DialogTitle>
+            <DialogTitle className="text-xl">{renewal ? 'Membership renewed' : 'Membership activated'}</DialogTitle>
             <p className="text-sm text-muted-foreground">
               {student.name} is now an active member and appears in <strong>All Students</strong>.
             </p>
@@ -159,20 +170,28 @@ export function ActivationDialog({
                 <dd className="font-semibold tabular-nums">{done.receipt}</dd>
               </div>
               <div className="flex justify-between px-3 py-2">
+                <dt className="text-muted-foreground">Paid</dt>
+                <dd className="font-semibold tabular-nums">₹{done.paid}</dd>
+              </div>
+              <div className="flex justify-between px-3 py-2">
                 <dt className="text-muted-foreground">Due</dt>
                 <dd className={cn('font-semibold tabular-nums', done.due > 0 && 'text-amber-600')}>₹{done.due}</dd>
               </div>
             </dl>
-            <Button className="w-full" onClick={onClose}>
-              Done
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" disabled={!done.paymentId} onClick={() => openReceipt(done.paymentId)}>
+                <Printer className="mr-2 h-4 w-4" /> Receipt
+              </Button>
+              <Button onClick={onClose}>Done</Button>
+            </div>
           </div>
         ) : student ? (
           <>
             <DialogHeader>
-              <DialogTitle>Collect fee &amp; activate</DialogTitle>
+              <DialogTitle>{renewal ? 'Renew membership' : <>Collect fee &amp; activate</>}</DialogTitle>
               <DialogDescription>
                 {student.name} · {student.phone}
+                {student.status === 'ACTIVE_MEMBER' && student.membershipEndDate ? ` · member till ${format(new Date(student.membershipEndDate), 'd MMM yyyy')}` : ''}
                 {student.seatNumber ? ` · Seat ${student.seatNumber} (kept)` : ''}
               </DialogDescription>
             </DialogHeader>
@@ -292,7 +311,7 @@ export function ActivationDialog({
                 </Button>
                 <Button type="submit" disabled={busy}>
                   {busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Activate membership
+                  {renewal ? 'Renew & generate receipt' : 'Activate membership'}
                 </Button>
               </DialogFooter>
             </form>

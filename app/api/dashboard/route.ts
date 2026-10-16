@@ -1,6 +1,8 @@
 // app/api/dashboard/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateRequest } from '@/lib/middleware/auth';
+import { authenticateRequest, libraryIdFor } from '@/lib/middleware/auth';
+import { Library } from '@/lib/models/Library';
+import { feesOverview } from '@/lib/services/membership';
 import { handleRouteError } from '@/lib/api-response';
 import {
   fetchDashboardStats,
@@ -28,12 +30,16 @@ export async function GET(request: NextRequest) {
     const decoded = await authenticateRequest(request);
     const userId = decoded.userId;
 
-    const [stats, studentChartRaw, paymentStatusRaw, activitiesRaw] =
+    const libraryId = await libraryIdFor(decoded);
+    const library = libraryId ? await Library.findById(libraryId) : null;
+
+    const [stats, studentChartRaw, paymentStatusRaw, activitiesRaw, fees] =
       await Promise.all([
         fetchDashboardStats(userId),
         fetchStudentChartData(userId),
         fetchPaymentStatusData(userId),
         fetchRecentActivity(userId),
+        library ? feesOverview(library) : null,
       ]);
 
     // student chart
@@ -87,6 +93,7 @@ export async function GET(request: NextRequest) {
         studentChart,
         paymentChart,
         activities: slicedActivities,
+        fees,
       },
     });
   } catch (error) {
