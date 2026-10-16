@@ -70,7 +70,15 @@ export function SiteFooter() {
             rights reserved.
           </p>
           <p className="text-xs text-muted-foreground">
-            Built with Next.js &amp; MongoDB
+            Made by{' '}
+            <a
+              href="https://anuragkushwah.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-foreground underline-offset-4 hover:text-primary hover:underline"
+            >
+              Anurag Kushwah
+            </a>
           </p>
         </div>
       </div>
