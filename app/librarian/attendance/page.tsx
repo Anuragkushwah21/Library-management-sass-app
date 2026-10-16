@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/dialog';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { formatInstant, formatMinutes, formatTime } from '@/lib/time';
+import { formatInstant, formatLate, formatMinutes, formatTime } from '@/lib/time';
 
 interface ShiftLite {
   _id: string;
@@ -49,6 +49,7 @@ interface StudentLite {
   name: string;
   phone: string;
   seatNumber: number | null;
+  status?: string;
 }
 interface Rec {
   _id: string;
@@ -66,6 +67,7 @@ interface Rec {
   source: 'QR' | 'MANUAL' | 'SYSTEM';
   autoCheckedOut: boolean;
   manuallyEdited: boolean;
+  timesRecorded?: boolean;
   note?: string;
 }
 interface Missing {
@@ -173,6 +175,18 @@ export default function AttendancePage() {
     }
   };
 
+  /** Roll call: Present / Absent without times (D17) */
+  const quickMark = async (m: Missing, action: 'present' | 'absent') => {
+    if (!data) return;
+    try {
+      await api.manualAttendance({ studentId: m.student._id, shiftId: m.shiftId, date: data.date, action });
+      toast.success(`${m.student.name} marked ${action}`);
+      await load();
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  };
+
   const override = async (rec: Rec, body: { arrivalStatus?: 'PRESENT' | 'LATE'; note?: string }, msg: string) => {
     try {
       await api.overrideAttendance(rec._id, body);
@@ -188,7 +202,7 @@ export default function AttendancePage() {
       {r.isInside && <Badge className="bg-emerald-600 hover:bg-emerald-600">Inside</Badge>}
       {r.arrivalStatus === 'LATE' ? (
         <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
-          Late by {r.lateMinutes} min
+          Late by {formatLate(r.lateMinutes)}
         </Badge>
       ) : r.arrivalStatus === 'PRESENT' ? (
         <Badge variant="outline" className="border-emerald-600 text-emerald-700 dark:text-emerald-400">
@@ -349,9 +363,11 @@ export default function AttendancePage() {
                         </td>
                         <td className="whitespace-nowrap px-4 py-3">{sh?.name ?? '—'}</td>
                         <td className="px-4 py-3 tabular-nums">{r.seatNumber ?? '—'}</td>
-                        <td className="whitespace-nowrap px-4 py-3 tabular-nums">{fmt(r.checkInAt)}</td>
-                        <td className="whitespace-nowrap px-4 py-3 tabular-nums">{r.isInside ? '—' : fmt(r.checkOutAt)}</td>
-                        <td className="whitespace-nowrap px-4 py-3 tabular-nums">{r.isInside ? 'Inside' : formatMinutes(r.totalMinutes)}</td>
+                        <td className="whitespace-nowrap px-4 py-3 tabular-nums">{r.timesRecorded === false ? '—' : fmt(r.checkInAt)}</td>
+                        <td className="whitespace-nowrap px-4 py-3 tabular-nums">{r.isInside || r.timesRecorded === false ? '—' : fmt(r.checkOutAt)}</td>
+                        <td className="whitespace-nowrap px-4 py-3 tabular-nums">
+                          {r.isInside ? 'Inside' : r.timesRecorded === false ? <span className="text-xs text-muted-foreground">Marked</span> : formatMinutes(r.totalMinutes)}
+                        </td>
                         <td className="px-4 py-3">{statusBadge(r)}</td>
                         <td className="px-2 py-2 text-right">
                           <DropdownMenu>
@@ -403,7 +419,10 @@ export default function AttendancePage() {
                     return (
                       <tr key={`${m.student._id}:${m.shiftId}`} className="bg-muted/20 align-top">
                         <td className="px-4 py-3">
-                          <div className="font-medium">{m.student.name}</div>
+                          <div className="flex items-center gap-1.5 font-medium">
+                            {m.student.name}
+                            {m.student.status === 'DEMO' && <Badge variant="secondary" className="text-[10px]">Demo</Badge>}
+                          </div>
                           <div className="text-xs text-muted-foreground">{m.student.phone}</div>
                         </td>
                         <td className="whitespace-nowrap px-4 py-3">{sh?.name ?? '—'}</td>
@@ -421,7 +440,14 @@ export default function AttendancePage() {
                             </Badge>
                           )}
                         </td>
-                        <td className="px-2 py-2 text-right">
+                        <td className="whitespace-nowrap px-2 py-2 text-right">
+                          <div className="flex justify-end gap-1">
+                          <Button variant="outline" size="sm" className="border-emerald-600/40 text-emerald-700 dark:text-emerald-400" onClick={() => quickMark(m, 'present')}>
+                            Present
+                          </Button>
+                          <Button variant="outline" size="sm" className="border-rose-600/40 text-rose-700 dark:text-rose-400" onClick={() => quickMark(m, 'absent')}>
+                            Absent
+                          </Button>
                           <Button
                             variant="outline"
                             size="sm"
@@ -438,6 +464,7 @@ export default function AttendancePage() {
                             <LogIn className="mr-1.5 h-3.5 w-3.5" />
                             Check in
                           </Button>
+                          </div>
                         </td>
                       </tr>
                     );

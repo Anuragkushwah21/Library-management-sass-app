@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addDaysToKey,
+  formatLate,
   crossesMidnight,
   localDateKey,
   nearbyOccurrences,
@@ -41,5 +42,17 @@ describe('time helpers', () => {
     const now = zonedTimeToUtc('2026-10-17', '02:00', IST);
     const current = nearbyOccurrences(night, now, IST).find((o) => o.start <= now && now <= o.end);
     expect(current?.date).toBe('2026-10-16');
+  });
+});
+
+describe('formatLate', () => {
+  it('stays in minutes under an hour, switches to hours from 60', () => {
+    expect(formatLate(25)).toBe('25 min');
+    expect(formatLate(59)).toBe('59 min');
+    expect(formatLate(60)).toBe('1 hour');
+    expect(formatLate(90)).toBe('1 hour 30 min');
+    expect(formatLate(61)).toBe('1 hour 1 min');
+    expect(formatLate(120)).toBe('2 hours');
+    expect(formatLate(155)).toBe('2 hours 35 min');
   });
 });

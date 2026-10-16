@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import QRCode from 'qrcode';
 import { connectDB } from '@/lib/db';
 import { requireLibraryContext } from '@/lib/middleware/auth';
+import { assertQrOtpAccess } from '@/lib/services/qr-access';
 import { handleRouteError, successResponse } from '@/lib/api-response';
 import { checkinUrl } from '@/lib/services/library';
 
@@ -12,6 +13,8 @@ export async function GET(request: NextRequest) {
   try {
     await connectDB();
     const ctx = await requireLibraryContext(request);
+    // The QR itself is part of the paid service: no access, no QR to print (§12.4)
+    await assertQrOtpAccess(ctx.library);
     const url = checkinUrl(ctx.library, request.nextUrl.origin);
 
     // High error correction so a scuffed print still scans

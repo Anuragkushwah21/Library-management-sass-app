@@ -28,6 +28,8 @@ export interface IAttendance extends Document {
   source: AttendanceSource;
   autoCheckedOut: boolean;
   manuallyEdited: boolean;
+  /** false for Mark Present / Mark Absent: no real times, excluded from study hours (D17) */
+  timesRecorded: boolean;
   overriddenBy?: mongoose.Types.ObjectId | null;
   note?: string;
   createdAt: Date;
@@ -60,6 +62,7 @@ const AttendanceSchema = new Schema<IAttendance>(
     source: { type: String, enum: ['QR', 'MANUAL', 'SYSTEM'], default: 'QR' },
     autoCheckedOut: { type: Boolean, default: false },
     manuallyEdited: { type: Boolean, default: false },
+    timesRecorded: { type: Boolean, default: true },
     overriddenBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     note: { type: String, trim: true, maxlength: 300 },
   },

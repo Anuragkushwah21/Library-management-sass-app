@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
         status: { $in: ['ACTIVE_MEMBER', 'DEMO'] },
         shiftId: { $in: inScope.map((s: any) => s._id) },
       })
-        .select('name phone seatNumber status shiftId membershipEndDate createdAt')
+        .select('name phone seatNumber status shiftId membershipEndDate demoStartDate demoEndDate createdAt')
         .lean();
 
       for (const shift of inScope) {
@@ -59,9 +59,13 @@ export async function GET(request: NextRequest) {
           if (String(st.shiftId) !== String(shift._id)) continue;
           if (seen.has(`${String(st._id)}:${String(shift._id)}`)) continue;
           if (st.createdAt && new Date(st.createdAt) > occ.end) continue;
-          if (st.membershipEndDate && new Date(st.membershipEndDate) < occ.start) continue;
+          if (st.status === 'DEMO') {
+            // Demo students are expected only on their demo days
+            if (st.demoStartDate && new Date(st.demoStartDate) > occ.end) continue;
+            if (st.demoEndDate && new Date(st.demoEndDate) < occ.start) continue;
+          } else if (st.membershipEndDate && new Date(st.membershipEndDate) < occ.start) continue;
           notCheckedIn.push({
-            student: { _id: st._id, name: st.name, phone: st.phone, seatNumber: st.seatNumber ?? null },
+            student: { _id: st._id, name: st.name, phone: st.phone, seatNumber: st.seatNumber ?? null, status: st.status },
             shiftId: shift._id,
             // Absent once the shift is over; until then they may still come
             state: now > occ.end ? 'ABSENT' : 'NOT_YET',

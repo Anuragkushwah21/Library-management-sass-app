@@ -273,6 +273,9 @@ export const api = {
   getSystemSettings: () => apiFetch('/api/admin/settings/system'),
 
   updateSystemSettings: (data: {
+    qrServicePrice?: number;
+    smsCreditPrice?: number;
+    qrServiceNote?: string;
     siteName?: string;
     supportEmail?: string;
     autoApproveLibrarians?: boolean;
@@ -351,12 +354,64 @@ export const api = {
     studentId: string;
     shiftId: string;
     date: string;
-    action: 'checkin' | 'checkout';
+    action: 'checkin' | 'checkout' | 'present' | 'absent';
     time?: string;
     note?: string;
+    force?: boolean;
   }) => apiFetch('/api/attendance/manual', { method: 'POST', body: JSON.stringify(data) }),
   overrideAttendance: (id: string, data: { arrivalStatus?: 'PRESENT' | 'LATE'; note?: string }) =>
     apiFetch(`/api/attendance/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+
+  // ========== IN-APP NOTIFICATIONS ==========
+  getNotificationFeed: () => apiFetch('/api/notifications/feed'),
+  markNotificationsRead: (data: { ids?: string[]; section?: string; all?: boolean }) =>
+    apiFetch('/api/notifications/read', { method: 'POST', body: JSON.stringify(data) }),
+
+  // ========== QR/OTP ACCESS ==========
+  getMyQrAccess: () => apiFetch('/api/library/qr-access'),
+  requestQrService: (message?: string) =>
+    apiFetch('/api/library/qr-access/request', { method: 'POST', body: JSON.stringify({ message }) }),
+  adminListQrAccess: (search = '') => apiFetch(`/api/admin/qr-access${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+  adminGetQrAccess: (libraryId: string) => apiFetch(`/api/admin/qr-access/${libraryId}`),
+  adminUpdateQrAccess: (libraryId: string, data: any) =>
+    apiFetch(`/api/admin/qr-access/${libraryId}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  adminAddSmsCredits: (libraryId: string, data: { credits: number; note: string; requestId: string }) =>
+    apiFetch(`/api/admin/qr-access/${libraryId}/credits`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // ========== DEMO STUDENTS / ACTIVATION ==========
+  getDemoFormOptions: () => apiFetch('/api/students/demo'),
+  /** multipart — returns the raw response body; throws with the server message */
+  addDemoStudent: async (form: FormData) => {
+    const res = await fetch('/api/students/demo', { method: 'POST', body: form, credentials: 'same-origin' });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = new Error(body?.error || 'Could not add the demo student.') as Error & { code?: string };
+      err.code = body?.code;
+      throw err;
+    }
+    return body;
+  },
+  getStudentsByStatus: (status: string, withStats = false) =>
+    apiFetch(`/api/students?status=${encodeURIComponent(status)}${withStats ? '&withStats=1' : ''}`),
+  extendDemo: (id: string, days: number) =>
+    apiFetch(`/api/students/${id}/demo`, { method: 'POST', body: JSON.stringify({ action: 'extend', days }) }),
+  endDemo: (id: string) =>
+    apiFetch(`/api/students/${id}/demo`, { method: 'POST', body: JSON.stringify({ action: 'end' }) }),
+  activateMembership: (
+    id: string,
+    data: {
+      planName: string;
+      startDate: string;
+      endDate: string;
+      fee: number;
+      paidAmount: number;
+      method: 'CASH' | 'UPI' | 'BANK_TRANSFER';
+      reference?: string;
+      seatNumber?: number | null;
+      requestId: string;
+    }
+  ) => apiFetch(`/api/students/${id}/activate`, { method: 'POST', body: JSON.stringify(data) }),
+  getIdProofLink: (id: string) => apiFetch(`/api/students/${id}/id-proof`),
 
   // ========== LIBRARIAN DASHBOARD ==========
   getDashboardStats: () => apiFetch('/api/dashboard'),
@@ -450,6 +505,17 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+
+  createSeatRange: (data: { from: number; to: number; notes?: string }) =>
+    apiFetch('/api/seats', { method: 'POST', body: JSON.stringify(data) }),
+
+  assignSeat: (seatId: string, studentId: string) =>
+    apiFetch(`/api/seats/${seatId}`, { method: 'PUT', body: JSON.stringify({ studentId }) }),
+
+  releaseSeat: (seatId: string) =>
+    apiFetch(`/api/seats/${seatId}`, { method: 'PUT', body: JSON.stringify({ release: true }) }),
+
+  releaseExpiredSeats: () => apiFetch('/api/seats/release-expired', { method: 'POST' }),
 
   deleteSeat: (seatId: string) =>
     apiFetch(`/api/seats/${seatId}`, {

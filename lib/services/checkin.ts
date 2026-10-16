@@ -13,6 +13,7 @@ import {
   shiftsForStudent,
 } from '@/lib/services/attendance';
 import { daysLeft, deriveMemberStatus } from '@/lib/services/student-status';
+import { expireDemos } from '@/lib/services/demo';
 import { isWithinCheckinWindow, AUTO_CHECKOUT_AFTER_MINUTES } from '@/lib/attendance-rules';
 import { localDateKey, MIN_MS, nearbyOccurrences, type ShiftOccurrence } from '@/lib/time';
 
@@ -30,6 +31,8 @@ export type ScanOutcome =
   | 'CHECKED_OUT'
   | 'ALREADY_CHECKED_OUT'
   | 'NOT_REGISTERED'
+  | 'DEMO_NOT_STARTED'
+  | 'QR_DISABLED'
   | 'AWAITING_APPROVAL'
   | 'REJECTED'
   | 'ACCESS_DENIED'
@@ -45,7 +48,7 @@ export interface ScanResult {
   library: { name: string; phone?: string | null; address?: string | null };
   student?: { name: string; seatNumber: number | null; status: string };
   shift?: { name: string; startTime: string; endTime: string };
-  membership?: { endDate: string | null; daysLeft: number | null; expiringSoon: boolean };
+  membership?: { endDate: string | null; daysLeft: number | null; expiringSoon: boolean; isDemo?: boolean };
   attendance?: {
     checkInAt: string | null;
     checkOutAt: string | null;
@@ -94,13 +97,19 @@ function libraryInfo(library: ILibrary) {
 }
 
 function membershipInfo(student: IStudent, library: ILibrary, now: Date) {
-  const left = daysLeft(student.membershipEndDate, now);
+  // Demo students count down their demo, members their membership
+  const isDemo = student.status === 'DEMO' || student.status === 'DEMO_ENDED';
+  const end = isDemo ? student.demoEndDate : student.membershipEndDate;
+  const left = daysLeft(end, now);
   return {
-    endDate: student.membershipEndDate ? student.membershipEndDate.toISOString() : null,
+    endDate: end ? end.toISOString() : null,
     daysLeft: left,
-    expiringSoon: left !== null && left <= (library.settings?.expiringSoonDays ?? 7),
+    expiringSoon: !isDemo && left !== null && left <= (library.settings?.expiringSoonDays ?? 7),
+    isDemo,
   };
 }
+
+
 
 export async function findStudentByPhone(libraryId: unknown, phone: string) {
   // Newest first in case unresolved legacy duplicates exist (PLAN §2.2)
@@ -134,7 +143,24 @@ export async function scan(args: {
   const student = await findStudentByPhone(library._id, phone);
   if (!student) return { outcome: 'NOT_REGISTERED', library: lib };
 
+  // R4 at scan time: a demo past its end date ends now (seat freed)
+  if (student.status === 'DEMO' && student.demoEndDate && student.demoEndDate < now) {
+    await expireDemos(library._id, String(student.librarianId), now);
+    const fresh = await Student.findById(student._id);
+    if (fresh) Object.assign(student, { status: fresh.status, seatNumber: fresh.seatNumber });
+  }
+
   const studentInfo = { name: student.name, seatNumber: student.seatNumber ?? null, status: student.status };
+
+  if (student.status === 'DEMO' && student.demoStartDate && student.demoStartDate > now) {
+    return {
+      outcome: 'DEMO_NOT_STARTED',
+      library: lib,
+      student: studentInfo,
+      membership: membershipInfo(student, library, now),
+      message: student.demoStartDate.toISOString(),
+    };
+  }
 
   switch (student.status) {
     case 'PENDING':

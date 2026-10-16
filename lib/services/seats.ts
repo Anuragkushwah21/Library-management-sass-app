@@ -3,6 +3,9 @@ import Seat from '@/lib/models/Seat';
 import { Student } from '@/lib/models/Students';
 import { ApiError } from '@/lib/api-response';
 
+/** Students who must never hold a seat. */
+const NO_SEAT_STATUSES = ['BLOCKED', 'REJECTED'];
+
 export class SeatError extends ApiError {
   constructor(statusCode: number, message: string) {
     super(statusCode, message);
@@ -53,7 +56,8 @@ export async function setStudentSeat({
   seatNumber: number | null;
   librarianId: string;
 }): Promise<{ seatNumber: number | null }> {
-  const student = await Student.findById(studentId);
+  // Scoped to this librarian: never assign (or touch) another library's student
+  const student = await Student.findOne({ _id: studentId, librarianId });
   if (!student) {
     throw new SeatError(404, 'Student not found');
   }
@@ -71,6 +75,13 @@ export async function setStudentSeat({
     student.seatNumber = null;
     await student.save();
     return { seatNumber: null };
+  }
+
+  if (NO_SEAT_STATUSES.includes(student.status)) {
+    throw new SeatError(
+      409,
+      `${student.name} is ${student.status === 'BLOCKED' ? 'blocked' : 'not an approved member'} and can't be given a seat.`
+    );
   }
 
   const target = await Seat.findOne({ seatNumber, librarianId });

@@ -228,7 +228,8 @@ import { StudentChart } from '@/components/librarian/student-chart';
 import { PaymentChart } from '@/components/librarian/payment-chart';
 import { RecentActivity } from '@/components/librarian/recent-activity';
 import { TodayAttendanceCard } from '@/components/librarian/today-attendance-card';
-import { Users, CreditCard, Armchair, BookOpen } from 'lucide-react';
+import { Users, CreditCard, Armchair, BookOpen, UserPlus, ClipboardCheck } from 'lucide-react';
+import Link from 'next/link';
 import { useToast } from '@/hooks/use-toast';
 
 type StatData = {
@@ -380,6 +381,25 @@ export default function DashboardClient() {
           icon={<BookOpen className="w-5 h-5" />}
           color="bg-orange-500"
         />
+      </div>
+
+      {/* Quick actions — the manual flow works with or without QR check-in */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {[
+          { href: '/librarian/students/add-demo', label: 'Add Demo Student', icon: UserPlus },
+          { href: '/librarian/attendance', label: 'Take attendance', icon: ClipboardCheck },
+          { href: '/librarian/students?tab=demo', label: 'Demo Students', icon: Users },
+          { href: '/librarian/seats', label: 'Seats', icon: Armchair },
+        ].map(({ href, label, icon: Icon }) => (
+          <Link
+            key={href}
+            href={href}
+            className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-sm font-medium shadow-sm transition-colors hover:border-primary/50 hover:bg-accent"
+          >
+            <Icon className="h-5 w-5 shrink-0 text-primary" />
+            {label}
+          </Link>
+        ))}
       </div>
 
       <TodayAttendanceCard />

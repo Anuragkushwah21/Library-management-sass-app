@@ -19,14 +19,20 @@ import {
 import { Sidebar } from '@/components/librarian/sidebar';
 import { TopNav } from '@/components/librarian/top-nav';
 import { BottomNav } from '@/components/librarian/bottom-nav';
+import { NotificationBell, NotificationsProvider, useNotifications } from '@/components/notifications';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Loader2, Menu } from 'lucide-react';
 
-export default function LibrarianLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function LibrarianLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <NotificationsProvider>
+      <LibrarianShell>{children}</LibrarianShell>
+    </NotificationsProvider>
+  );
+}
+
+function LibrarianShell({ children }: { children: React.ReactNode }) {
+  const { feed } = useNotifications();
   const router = useRouter();
   const pathname = usePathname();
   const [isLoading, setIsLoading] = useState(true);
@@ -164,6 +170,7 @@ export default function LibrarianLayout({
           </span>
 
           <div className="ml-auto flex items-center gap-1">
+            <NotificationBell />
             <ThemeToggle />
             <TopNav user={user} />
           </div>
@@ -177,7 +184,11 @@ export default function LibrarianLayout({
         </main>
 
         {/* Mobile tab bar — sits below main in the flex column, so content never hides behind it */}
-        <BottomNav onMore={() => setSidebarOpen(true)} />
+        <BottomNav
+          onMore={() => setSidebarOpen(true)}
+          badges={{ '/librarian/students': feed?.sections?.students ?? 0 }}
+          moreBadge={feed?.counts?.expiringSoon ?? 0}
+        />
       </div>
     </div>
   );

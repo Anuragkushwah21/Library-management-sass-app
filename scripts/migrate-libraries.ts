@@ -23,7 +23,7 @@ async function main() {
 
   const { User } = await import('@/lib/models/User');
   const { Library } = await import('@/lib/models/Library');
-  const { Student, UNIQUE_PHONE_INDEX } = await import('@/lib/models/Students');
+  const { Student, UNIQUE_PHONE_INDEX, UNIQUE_EMAIL_INDEX } = await import('@/lib/models/Students');
   const { normalizePhone } = await import('@/lib/phone');
   const { ensureLibraryForUser, backfillTenant } = await import('@/lib/services/library');
 
@@ -52,6 +52,33 @@ async function main() {
     }
   }
 
+  // Step 2.5 (PLAN §12.7): admin-controlled QR/OTP access. Libraries that had
+  // turned QR on themselves keep it (D22), with 0 credits.
+  const needAccess = await db.collection('libraries').find({ accessStatus: { $exists: false } }).toArray();
+  console.log(`\n• QR/OTP access fields to add: ${needAccess.length} librar${needAccess.length === 1 ? 'y' : 'ies'}` +
+    (needAccess.length ? ` (${needAccess.filter((l: any) => l.settings?.otpEnabled).length} had QR on and keep it)` : ''));
+  if (APPLY) {
+    const month = new Date().toISOString().slice(0, 7);
+    for (const l of needAccess) {
+      const on = Boolean(l.settings?.otpEnabled);
+      await db.collection('libraries').updateOne(
+        { _id: l._id, accessStatus: { $exists: false } },
+        {
+          $set: {
+            accessStatus: 'ACTIVE',
+            qrAttendanceEnabled: on,
+            otpEnabled: on,
+            smsCreditBalance: 0,
+            monthlyOtpLimit: null,
+            otpUsedThisMonth: 0,
+            otpUsageMonth: month,
+            accessNote: on ? 'Carried over from the old librarian switch' : '',
+          },
+        }
+      );
+    }
+  }
+
   const orphans = await db.collection('students').countDocuments({
     librarianId: { $nin: librarians.map((u) => u._id) },
   });
@@ -60,7 +87,7 @@ async function main() {
   // Duplicate phones per library, AFTER normalization (9876543210 == +919876543210)
   const all = await db
     .collection('students')
-    .find({}, { projection: { librarianId: 1, libraryId: 1, phone: 1, name: 1, status: 1 } })
+    .find({}, { projection: { librarianId: 1, libraryId: 1, phone: 1, email: 1, name: 1, status: 1 } })
     .toArray();
   const groups = new Map<string, any[]>();
   for (const s of all) {
@@ -76,6 +103,23 @@ async function main() {
     }
   } else {
     console.log('\n✓ No duplicate phone numbers within a library.');
+  }
+
+  // Same for emails (case-insensitive)
+  const emailGroups = new Map<string, any[]>();
+  for (const s of all) {
+    if (s.status === 'REJECTED' || !s.email) continue;
+    const key = `${String(s.libraryId ?? s.librarianId)}|${String(s.email).trim().toLowerCase()}`;
+    emailGroups.set(key, [...(emailGroups.get(key) ?? []), s]);
+  }
+  const emailDups = [...emailGroups.values()].filter((g) => g.length > 1);
+  if (emailDups.length) {
+    console.log(`\n⚠ ${emailDups.length} duplicate email group(s) — fix these too, then re-run:`);
+    for (const g of emailDups) {
+      console.log(`   ${String(g[0].email).toLowerCase()}: ${g.map((s) => `${s.name} (${s._id})`).join(', ')}`);
+    }
+  } else {
+    console.log('✓ No duplicate emails within a library.');
   }
 
   if (APPLY) {
@@ -104,6 +148,16 @@ async function main() {
       console.log('  ✓ Student (incl. unique libraryId+phone)');
     } else {
       console.log('  ✓ Student (unique libraryId+phone SKIPPED until duplicates are fixed)');
+    }
+    if (emailDups.length === 0) {
+      // Lowercase legacy emails first, or the index would miss case duplicates
+      await Student.collection.updateMany({ email: /[A-Z]|^\s|\s$/ }, [
+        { $set: { email: { $toLower: { $trim: { input: '$email' } } } } },
+      ]);
+      await Student.collection.createIndex(UNIQUE_EMAIL_INDEX.key, UNIQUE_EMAIL_INDEX.options as any);
+      console.log('  ✓ Student (incl. unique libraryId+email)');
+    } else {
+      console.log('  ✓ Student (unique libraryId+email SKIPPED until duplicates are fixed)');
     }
   }
 

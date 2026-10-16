@@ -96,17 +96,30 @@ const msg91: OtpChannel = {
   },
 };
 
-/** Fast2SMS "OTP" route — Indian numbers only; uses Fast2SMS's own OTP text. */
+/**
+ * Fast2SMS — Indian numbers only. FAST2SMS_ROUTE picks how:
+ *   otp (default) Fast2SMS's own OTP text; needs website verification in their "OTP Message" menu
+ *   q             Quick SMS with our OTP_SMS_TEMPLATE text; needs one ₹100+ recharge, costs more per SMS
+ */
 const fast2sms: OtpChannel = {
   name: 'fast2sms',
-  check: () => void requireEnv('fast2sms', ['FAST2SMS_API_KEY']),
-  async send(phone, code) {
+  check() {
+    requireEnv('fast2sms', ['FAST2SMS_API_KEY']);
+    const route = env('FAST2SMS_ROUTE') || 'otp';
+    if (!['otp', 'q'].includes(route)) throw new OtpConfigError('FAST2SMS_ROUTE must be "otp" or "q"');
+  },
+  async send(phone, code, libraryName) {
     const c = requireEnv('fast2sms', ['FAST2SMS_API_KEY']);
     if (!phone.startsWith('+91')) throw new Error('Fast2SMS only delivers to Indian (+91) numbers.');
+    const route = env('FAST2SMS_ROUTE') || 'otp';
+    const payload =
+      route === 'q'
+        ? { route: 'q', message: otpMessage(code, libraryName), numbers: national(phone), flash: '0' }
+        : { route: 'otp', variables_values: code, numbers: national(phone) };
     const body = await request('Fast2SMS', 'https://www.fast2sms.com/dev/bulkV2', {
       method: 'POST',
       headers: { authorization: c.FAST2SMS_API_KEY, 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ route: 'otp', variables_values: code, numbers: national(phone) }),
+      body: JSON.stringify(payload),
     });
     if (/"return"\s*:\s*false/.test(body)) throw new Error(`Fast2SMS: ${body.slice(0, 300)}`);
   },

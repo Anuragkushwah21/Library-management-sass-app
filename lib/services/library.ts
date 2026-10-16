@@ -196,7 +196,18 @@ export function appBaseUrl(requestOrigin?: string): string {
   const origin = requestOrigin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(requestOrigin)
     ? requestOrigin
     : null;
-  return (origin || process.env.NEXT_PUBLIC_APP_URL || requestOrigin || 'http://localhost:3000').replace(/\/$/, '');
+  return withScheme(origin || process.env.NEXT_PUBLIC_APP_URL || requestOrigin || 'http://localhost:3000');
+}
+
+/**
+ * "192.168.1.5:3000" → "http://192.168.1.5:3000", "myapp.com" → "https://myapp.com".
+ * Without a scheme a phone camera reads the QR as plain text, not a link.
+ */
+export function withScheme(url: string): string {
+  const u = url.trim().replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(u)) return u;
+  const local = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u);
+  return `${local ? 'http' : 'https'}://${u}`;
 }
 
 export function checkinUrl(library: ILibrary, requestOrigin?: string): string {

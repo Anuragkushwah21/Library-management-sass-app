@@ -14,6 +14,7 @@ export const LibraryUpdateSchema = z.object({
       graceMinutes: z.coerce.number().int().min(0).max(180).optional(),
       earlyCheckinMinutes: z.coerce.number().int().min(0).max(240).optional(),
       expiringSoonDays: z.coerce.number().int().min(1).max(60).optional(),
+      demoDays: z.coerce.number().int().min(1).max(30).optional(),
       geofence: z
         .object({
           enabled: z.boolean(),
@@ -46,7 +47,9 @@ export const ManualAttendanceSchema = z.object({
   studentId: z.string().regex(/^[a-f\d]{24}$/i, 'Invalid student'),
   shiftId: z.string().regex(/^[a-f\d]{24}$/i, 'Invalid shift'),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  action: z.enum(['checkin', 'checkout']),
+  action: z.enum(['checkin', 'checkout', 'present', 'absent']),
+  /** Mark Absent over a real check-in needs this (R14) */
+  force: z.boolean().optional(),
   /** Library-local HH:mm; defaults to now */
   time: hhmm.optional(),
   note: z.string().trim().max(300).optional(),

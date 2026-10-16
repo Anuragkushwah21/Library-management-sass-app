@@ -118,3 +118,68 @@ export async function uploadAdImage(buffer: Buffer): Promise<UploadResult> {
     stream.end(buffer);
   });
 }
+
+/** Student photo: square crop, public (shown in lists). */
+export async function uploadStudentPhoto(buffer: Buffer): Promise<UploadResult> {
+  ensureConfigured();
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'librasaas/students',
+        resource_type: 'image',
+        transformation: [
+          { width: 400, height: 400, crop: 'fill', gravity: 'face' },
+          { quality: 'auto', fetch_format: 'auto' },
+        ],
+      },
+      (error, result) => {
+        if (error || !result) return reject(error || new Error('Cloudinary upload failed'));
+        resolve({ url: result.secure_url, publicId: result.public_id });
+      }
+    );
+    stream.end(buffer);
+  });
+}
+
+/**
+ * ID proof: stored as an *authenticated* asset — there is no public URL.
+ * Read it only through privateIdProofUrl() (PLAN D16).
+ */
+export async function uploadIdProof(
+  buffer: Buffer,
+  isPdf: boolean
+): Promise<{ publicId: string; format: string; resourceType: string }> {
+  ensureConfigured();
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'librasaas/id-proofs',
+        type: 'authenticated',
+        resource_type: isPdf ? 'raw' : 'image',
+        ...(isPdf ? { format: 'pdf' } : {}),
+      },
+      (error, result) => {
+        if (error || !result) return reject(error || new Error('Cloudinary upload failed'));
+        resolve({
+          publicId: result.public_id,
+          format: result.format || (isPdf ? 'pdf' : 'jpg'),
+          resourceType: result.resource_type,
+        });
+      }
+    );
+    stream.end(buffer);
+  });
+}
+
+/** Signed download link that stops working after `seconds`. */
+export function privateIdProofUrl(
+  proof: { publicId: string; format: string; resourceType: string },
+  seconds = 300
+): string {
+  ensureConfigured();
+  return cloudinary.utils.private_download_url(proof.publicId, proof.format, {
+    resource_type: proof.resourceType,
+    type: 'authenticated',
+    expires_at: Math.floor(Date.now() / 1000) + seconds,
+  });
+}

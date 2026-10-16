@@ -4,6 +4,7 @@ import { StudentOtp } from '@/lib/models/StudentOtp';
 import { Library, type ILibrary } from '@/lib/models/Library';
 import { ApiError } from '@/lib/api-response';
 import { exposeDevCode, getOtpChannel } from '@/lib/otp/channels';
+import { chargeOtpSend, logFreeOtpEvent, refundOtpSend } from '@/lib/services/qr-access';
 import { localDateKey } from '@/lib/time';
 
 export const OTP_TTL_MS = 5 * 60 * 1000;
@@ -11,6 +12,7 @@ export const OTP_MAX_ATTEMPTS = 5;
 export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 export const OTP_MAX_SENDS_PER_HOUR = 5;
 export const OTP_MAX_SENDS_PER_LIBRARY_DAY = 500;
+export const OTP_MAX_SENDS_PER_PHONE_DAY = 10;
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -63,9 +65,19 @@ export async function sendStudentOtp(
     throw new ApiError(429, 'Too many codes requested for this number. Try again in an hour.');
   }
 
+  const today = localDateKey(now, library.settings?.timezone || 'Asia/Kolkata');
+  const sentToday = doc?.dayKey === today ? doc.dayCount ?? 0 : 0;
+  if (sentToday >= OTP_MAX_SENDS_PER_PHONE_DAY) {
+    throw new ApiError(429, 'Too many codes requested for this number today. Try again tomorrow.');
+  }
+
   if (!(await reserveLibrarySend(library))) {
     throw new ApiError(429, 'This library has reached its daily OTP limit. Please ask the librarian.');
   }
+
+  // §12.2: one SMS credit per real SMS (test mode is free, D21). Taken after
+  // the cooldown/limit checks so refused requests never cost anything.
+  const chargeRow = channel.name === 'console' ? null : await chargeOtpSend(library, phone, channel.name);
 
   const code = String(randomInt(100000, 1000000));
   doc = await StudentOtp.findOneAndUpdate(
@@ -77,6 +89,8 @@ export async function sendStudentOtp(
         attempts: 0,
         lastSentAt: now,
         purgeAt: new Date(now.getTime() + DAY_MS),
+        dayKey: today,
+        dayCount: sentToday + 1,
         ...(windowExpired ? { windowStart: now, sendCount: 1 } : {}),
       },
       ...(windowExpired ? {} : { $inc: { sendCount: 1 } }),
@@ -88,10 +102,13 @@ export async function sendStudentOtp(
     await channel.send(phone, code, library.name);
   } catch (err) {
     console.error('[StudentOtp] delivery failed:', err);
+    if (chargeRow) await refundOtpSend(library, chargeRow);
     // Let them retry straight away — the code never arrived
     await StudentOtp.updateOne({ _id: doc!._id }, { $set: { lastSentAt: null, codeHash: null } });
     throw new ApiError(502, 'Could not send the code right now. Please try again.');
   }
+
+  if (!chargeRow) await logFreeOtpEvent(library, 'OTP_SEND', phone, channel.name);
 
   return {
     resendInSeconds: OTP_RESEND_COOLDOWN_MS / 1000,
@@ -137,4 +154,6 @@ export async function verifyStudentOtp(library: ILibrary, phone: string, code: s
 
   // Single use
   await StudentOtp.updateOne({ _id: doc._id }, { $set: { codeHash: null, expiresAt: null } });
+  // D19: verify is logged in the ledger but costs no credit
+  await logFreeOtpEvent(library, 'OTP_VERIFY', phone, 'verify');
 }

@@ -6,11 +6,22 @@ import { handleRouteError, successResponse } from '@/lib/api-response';
 import { Library } from '@/lib/models/Library';
 import { LibraryUpdateSchema } from '@/lib/validation-library';
 import { logAudit } from '@/lib/services/audit';
+import { getOtpChannel } from '@/lib/otp/channels';
 
 export const runtime = 'nodejs';
 
+function smsStatus() {
+  try {
+    const ch = getOtpChannel();
+    return { smsConfigured: ch.name !== 'console', smsTestMode: ch.name === 'console' };
+  } catch {
+    return { smsConfigured: false, smsTestMode: false };
+  }
+}
+
 function serialize(lib: any) {
   return {
+    ...smsStatus(),
     id: String(lib._id),
     name: lib.name,
     slug: lib.slug,
@@ -18,6 +29,12 @@ function serialize(lib: any) {
     address: lib.address ?? '',
     status: lib.status,
     settings: lib.settings,
+    // Read-only here: only the platform admin changes these (§12)
+    qrAccess: {
+      qrAttendanceEnabled: Boolean(lib.qrAttendanceEnabled),
+      otpEnabled: Boolean(lib.otpEnabled),
+      accessStatus: lib.accessStatus ?? 'ACTIVE',
+    },
   };
 }
 

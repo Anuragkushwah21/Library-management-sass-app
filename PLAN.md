@@ -1,663 +1,936 @@
-# PLAN — QR Check-in, Shifts, Seats, Attendance, Memberships & Admin Libraries
+# PLAN: Student lifecycle, QR attendance, seats, memberships & payments
 
-Status: **approved** (2026-10-16), with the refinements in §0.1. The D1–D7 defaults are accepted. Built in four phases (§11). **Phase 1 complete and verified (2026-10-16); Phase 2 awaiting go-ahead.**
+**Status (2026-10-16, revision 5):** adds **admin-controlled QR/OTP access per library**, with SMS credits, monthly limits and a credit ledger (§12). It **awaits approval**. Changes since revision 4 are marked 🆕5.
+
+Earlier revisions added manual demo admission, manual attendance and a QR switch. Revision 5 **moves that switch from the librarian to the admin**.
+
+**Delivered 2026-10-16 (ahead of the phase order, on request):**
+- The QR switch (`otpEnabled`, default off).
+- The per-phone daily OTP limit.
+- **Add Demo Student** (manual).
+- The **QR demo form** (unregistered number → demo starts → checked in).
+- Demo extend / end / lazy expiry.
+- Manual Present/Absent.
+- The tabbed Students page (Demo · All · Demo Ended · Expired · Blocked).
+- **Collect fee & activate**, with Membership + Payment records, receipt numbers and double-click safety.
+
+Verified by 154 e2e checks and 38 unit tests.
+
+**Deviations from this plan:**
+- Demo seats use the existing one-student-per-seat model; shift-wise `SeatAssignment` / R3 sharing is still Phase 3.
+- Not built yet: the printable receipt page, the Pending Payments tab and ESLint.
+
+**Revision 4 change:** a new student who scans the QR fills the demo form and **their demo starts immediately** — there is no librarian approval step and no "New Requests" list. Everything the QR does can also be done manually by the librarian (§2.3).
+
+- **Phase 1 is already built and verified:**
+  - 100/100 end-to-end checks in `scripts/e2e-phase1.mjs`
+  - 34 unit tests
+  - build passing
+- **Phase 1.1** is a small set of gaps in Phase 1 found against the new spec (§10).
+- **Phases 2–4** are not started.
+- **No source code changes** until this revision is approved.
+
+The previous version of this plan is in git (commit `86c1255`).
+
+Stack: Next.js 16 App Router · React 19 · TypeScript · **MongoDB + Mongoose 9** (no Prisma) · Tailwind v4 + shadcn/ui · zod · Vercel.
 
 ---
 
-## 0. Decisions needed before implementation
+## 0. Decisions
 
-Each has a recommended default. Approving the plan as-is means accepting these defaults.
+### 0.1 Already approved (still in force)
 
-| # | Decision | Recommended default | Why it matters |
+| # | Decision |
+|---|---|
+| D1 | SMS goes through a pluggable `OtpChannel`. The provider is chosen in `.env` (`OTP_CHANNEL` = fast2sms / msg91 / 2factor / twilio / webhook / console). `OTP_TEST_MODE=true` shows the code on screen for free testing. |
+| D2 | OTP once per device, then a 30-day per-library student session cookie. |
+| D3 | Signed QR plus an optional geofence. |
+| D4 | Student check-in keeps working for 7 days after the librarian's own plan lapses. |
+| D5 | One protected cron endpoint, called every 15 minutes (cron-job.org or Vercel Pro). Every rule is also enforced lazily at scan time and on list reads. |
+| D6 | Receipts and reports are print-optimized HTML (the browser saves them as PDF). CSV for exports. |
+| D7 | The live seat map polls every 10–30 s. |
+
+### 0.2 New decisions for this revision (defaults apply unless you change them)
+
+| # | Question | Default | Why |
 |---|---|---|---|
-| D1 | **SMS provider for student OTP.** The project has email (SMTP/Resend) but no SMS. | **MSG91** (India DLT-ready), behind a pluggable `OtpChannel` interface. In development, the OTP is printed to the server console. Fast2SMS and Twilio can be added later behind the same interface. | Phone OTP can't reach real students without a paid SMS account and DLT template registration (takes days in India). Until it's set up, check-in works only in dev mode. |
-| D2 | **How often a student must enter an OTP** | OTP once per device; a signed, httpOnly **student session cookie** lasts **30 days**, scoped to that one library. Later scans only need the session. | Requiring an OTP on every scan costs one SMS per scan (2 per day per student) and slows the entry queue. |
-| D3 | **Stopping remote check-in** (someone photographs the QR and scans from home) | v1: signed QR plus an **optional geofence**: the librarian sets the library's location and a radius, and the browser must share its location to check in. Off by default. | A static QR can be used from anywhere. A rotating on-screen QR is the stronger option but needs a screen at the door; listed under next steps. |
-| D4 | **Librarian's own trial/plan lapses** (the existing `ACCESS_LOCKED` flow) | Student check-in **keeps working for 7 days** after the librarian is locked, then the check-in page shows "Library temporarily unavailable". | Students shouldn't be locked out the moment the owner's subscription lapses. |
-| D5 | **Background jobs on Vercel.** Vercel Hobby cron runs at most once a day. | One idempotent endpoint, `POST /api/cron/attendance`, protected by `CRON_SECRET`. Call it **every 15 minutes** from cron-job.org (free) or Vercel Pro cron. Check-in rules are also enforced **at scan time**, so a late cron never lets an expired student in. | Shift-end jobs (absent marking, auto check-out) need to run several times a day. |
-| D6 | **PDF exports and receipts** | Print-optimized HTML pages; the browser's "Save as PDF" produces the PDF. CSV is generated server-side. No PDF library. | Avoids a heavy dependency; can switch to `@react-pdf/renderer` later if needed. |
-| D7 | **Real-time seat map** | **Polling every 10 s** with SWR (already installed). | Vercel serverless can't hold WebSockets; polling is reliable and cheap at this scale. |
-
-New dependencies: **`qrcode`** (QR image generation) and **`vitest`** (dev only, unit tests). Nothing else.
+| D8 🆕 | What does "3-day demo" mean exactly? | **Default end date = start date + 3 days, as your new spec says, editable on the manual form.** Both dates are calendar dates in the library's timezone and are **inclusive**. Start Monday → default end Thursday, so attendance is allowed Mon–Thu, and the demo expires after Thursday 23:59. QR approval uses the same rule. | Your spec gives the default explicitly. If you meant exactly 3 days (Mon–Wed), say so and the default becomes start + 2. |
+| D9 | Phone storage format | **E.164 `+91XXXXXXXXXX`** everywhere (already implemented). The original input is kept in `phoneRaw`. | Works for non-Indian numbers too; SMS providers need it. |
+| D10 | "Delete/Archive" on Demo Ended | **Archive only** (soft: `archivedAt`). Archived students are hidden from lists, kept in the DB and in reports. No hard delete for students who have attendance or payments. | Never lose history. |
+| D11 | Is partial payment allowed at activation? | **Yes.** Status is PARTIAL and the student appears in Pending Payments. Controlled by the library setting `allowPartialPayment` (default on). | Matches the spec ("if partial payment is allowed"). |
+| D12 | Lint | **Add ESLint** (`eslint` + `eslint-config-next`, flat config) in Phase 1.1. Errors are fixed in new and changed files; legacy issues are reported as warnings, not mass-rewritten. | `npm run lint` currently fails: eslint is not installed. |
+| D13 | Where the student lists live | **Refactor the existing `/librarian/students` page into tabs** (not a new page): Demo Students, All Students (= ACTIVE_MEMBER), Demo Ended, Expired, Pending Payments. 🆕 No New Requests tab. The sidebar keeps one "Students" entry, with a badge counting demos started today. | Avoids a parallel student UI. |
+| D14 | The existing "Memberships" page | Keep its "send expiry reminders" action. In Phase 3 it becomes **Plans & Payments**: membership plans, Pending Payments, receipts. | Reuse, no duplicate page. |
+| D15 🆕 ~~superseded by §12~~ | QR/OTP for libraries that already use it | `settings.otpEnabled` defaults to **false for every library**, including existing ones (your spec: "false initially"). Librarians turn it on in Settings. | **Behaviour change:** a library that is testing QR check-in today stops working until the switch is turned on. Nothing is deleted. |
+| D16 🆕 | ID proof privacy | ID proofs are uploaded as **private** Cloudinary files (`type: authenticated`), never public URLs. They are viewable only by the library's librarian, through a link that expires in 5 minutes. Photos are normal public images. | ID documents are sensitive personal data. |
+| D17 🆕 | What "Mark Present" records | A present record with **no real times**: `checkInAt = shift start`, `checkOutAt = shift end`, `timesRecorded = false`. Study-hour totals and "Late" ignore such records. Manual Check In / Check Out record real times. | Roll-call style attendance without inventing study hours. |
+| D18 🆕 | Where the form lives | A new page **`/librarian/students/add-demo`**: a sidebar item "Add Demo Student", plus a button on the Demo Students tab. The existing Add Student form stays for direct paid members. | Clear separation; reuses the existing form layout and components. |
+| D19 🆕5 | Does OTP **verify** cost a credit? | **No.** One credit per OTP **send** (one SMS). Verify checks access and writes a ledger entry with 0 credits. | Your spec says send *and* verify "deduct", but verify sends no SMS, so charging for it bills twice per login. If you really want verify charged, it's a one-line change. |
+| D20 🆕5 | What "QR on, OTP off" means | **Phones that are already verified keep checking in. New phones can't be verified** (OTP send/verify refused). QR + access status gate every QR route; OTP + credits gate only the OTP routes. | Lets an admin stop SMS spending without stopping attendance for students who are already verified. With all four checks on every route, a library with 0 credits couldn't even scan. |
+| D21 🆕5 | Test mode / console channel | **Uses no credits.** The ledger records `provider: console`, 0 credits. The access flags still apply. | No SMS is sent, so there is nothing to bill. |
+| D22 🆕5 | Libraries that turned QR on themselves (revisions 3–4) | The migration **keeps their setting** (both flags on), with `smsCreditBalance = 0`. Their students keep scanning; new OTPs return 402 until the admin adds credits. | Doesn't silently break a library already using QR; spending still needs admin action. |
+| D23 🆕5 | When does `accessStatus` become EXPIRED? | When the admin sets it, or automatically once the optional `accessExpiresAt` (set by the admin) passes. Checked lazily on every QR call. | Your spec lists EXPIRED but not what triggers it. |
+| D24 🆕5 | Monthly limit hit | **429 `MONTHLY_OTP_LIMIT`** (distinct from 402 "no credits"). `monthlyOtpLimit = null` means no monthly limit. The counter resets on the 1st of each month in the library's timezone. | Different cause, different fix: wait vs. buy credits. |
 
 ---
 
-## 0.1 Approved refinements (binding rules)
+## 1. Current state analysis
 
-These override anything less specific elsewhere in this plan.
+### 1.1 Already exists (Phase 1 + follow-up work)
 
-### R1. Attendance scan rules
-For one student, one shift occurrence (shift + library-local start date):
-
-| Scan | Existing record | Result |
+| Area | What is there | Files |
 |---|---|---|
-| 1st | none | **Check-in.** `checkInAt = now`, `isInside = true` |
-| 2nd | open (no `checkOutAt`) | **Check-out.** `checkOutAt = now`, `totalMinutes` computed, `isInside = false` |
-| 3rd and later | closed | **"You have already checked out today."** Nothing is written. |
+| Tenant | `Library` model is the tenant. `User.libraryId`. Lazy `ensureLibraryForUser` with backfill. `requireLibraryContext` guard (libraryId always from session). `libraryIdFor()` for older routes. Re-runnable `scripts/migrate-libraries.ts` (dry-run by default, reports duplicate phones/emails, builds unique indexes only when clean). | `lib/models/Library.ts`, `lib/services/library.ts`, `lib/middleware/auth.ts` |
+| Student | `status` field (PENDING, DEMO, ACTIVE_MEMBER, EXPIRED, DEMO_ENDED, REJECTED, BLOCKED; only ACTIVE_MEMBER, EXPIRED and BLOCKED are used so far). E.164 phone + `phoneRaw`. `shiftId`. One phone and one email per library (API + unique partial indexes). Block/unblock. Status derived from membership dates on add/edit. | `lib/models/Students.ts`, `app/api/students/*`, `lib/services/student-status.ts` |
+| QR | Signed URL `/checkin/<slug>?k=<hmac>` (no personal data). Rotation via `qrVersion`. Library QR page: view, copy, download, print poster, regenerate. | `app/librarian/library-qr`, `app/api/library/qr*` |
+| OTP | HMAC-hashed codes, 5-minute expiry, 5 attempts, 60 s cooldown, 5 sends/phone/hour, 500 sends/library/day, IP limit, constant-time compare. Five SMS providers + test mode. | `lib/services/student-otp.ts`, `lib/otp/channels.ts` |
+| Check-in | Mobile flow: phone → OTP → scan. State machine covering CHECKED_IN, CHECKED_OUT, ALREADY_CHECKED_OUT, RENEWAL_REQUIRED, ACCESS_DENIED, NOT_REGISTERED, AWAITING_APPROVAL, OUTSIDE_SHIFT_HOURS, LIBRARY_UNAVAILABLE, OUT_OF_RANGE. 2-minute repeat-scan guard. Confirmation screen (library, name, seat, shift, membership days left, check-in time, Present/Late, expiring warning). | `app/checkin/[slug]`, `lib/services/checkin.ts` |
+| Attendance | `Attendance` model with every spec field plus `arrivalStatus`, `lateMinutes`, `leftEarly`, `autoCheckedOut`, `manuallyEdited`, `note`. Unique `{studentId, shiftId, date}`. Lazy auto check-out at shift end + 30 min. Attendance page: filters, "Late by X", Inside now, manual check-in/out/override. Dashboard card. | `lib/models/Attendance.ts`, `lib/services/attendance.ts`, `app/librarian/attendance` |
+| Shifts | `Shift` model, CRUD page, midnight-crossing support, default "Full Day". | `lib/models/Shift.ts`, `app/librarian/shifts` |
+| Settings | Library profile, timezone, `graceMinutes` (default 15), `earlyCheckinMinutes`, `demoDays` (default 3, not yet used), `expiringSoonDays`, geofence. | `components/librarian/library-settings-card.tsx` |
+| Seats (v1.5) | One student per seat (no shifts). Computed state: available / assigned / occupied (inside now) / expired. Colour seat map, bulk add, assign/move/release with conflict check, "Free expired seats", audit. | `app/librarian/seats`, `lib/services/seats.ts`, `lib/services/seat-view.ts` |
+| Audit | `AuditLog`. Logged so far: librarian login, manual attendance, QR rotation, settings, shifts, seats. | `lib/services/audit.ts` |
+| Tests | Vitest units (time, phone, attendance rules, OTP providers, URL scheme). Node e2e on a throwaway local Mongo (100 checks). | `tests/`, `scripts/e2e-phase1.mjs` |
 
-- **Auto check-out:** an open record is closed once **shift end + 30 minutes** has passed. It gets `checkOutAt = shift end` (the student is not credited the 30 minutes) and `autoCheckedOut = true`.
-  - Applied lazily, whenever a scan or the attendance list touches the record, from Phase 1.
-  - From Phase 4 it is also applied by the cron.
-- A scan between shift end and shift end + 30 min, with an open record, is a normal check-out at the real time.
-- A check-in is accepted from `shift start − earlyCheckinMinutes` (default 60) up to shift end. Outside that window: **"Outside shift hours"**, with the next start time.
+### 1.2 Missing
 
-### R2. Grace period
-- **Library-level setting** `settings.graceMinutes`, default **15**, range 0–180.
-- **Late** means `checkInAt > shiftStart + graceMinutes`; otherwise Present.
-- `lateMinutes = ceil((checkInAt − shiftStart) / 1 min)` is stored on the record. The librarian dashboard and attendance list show **"Late by X min"**.
+- **Registration and demo:** 🆕 the QR demo form (starts the demo directly); the DEMO lifecycle (start/end, extend, end now); DEMO attendance; demo expiry.
+- **Membership and payments:**
+  - `MembershipPlan`, `Membership`, `Payment`, receipt numbers, the activation modal, Pending Payments.
+  - The six status-driven student lists.
+- **Shift-wise seats:**
+  - `Section`, `SeatAssignment` (shift-wise, date-ranged, DEMO_HOLD / ACTIVE).
+  - The REQUESTED and DEMO_HOLD seat states.
+  - Seat history.
+- **Background and admin work:**
+  - The cron endpoint: ABSENT marking, demo and membership expiry, seat release.
+  - Reports and CSV.
+  - The "My Library" student page and printable receipts.
+  - Admin library management, revenue, the audit viewer.
+- 🆕 **Manual operation without QR:** the "Add Demo Student" form, manual Present/Absent, and the `otpEnabled` switch.
+- **Phase 1 gaps (→ Phase 1.1):**
+  - per-phone *daily* OTP limit
+  - ESLint
 
-### R3. Seat conflict rule (Phase 3)
-- A seat can't have two assignments with status **ACTIVE** or **DEMO_HOLD** whose **shift time windows overlap** *and* whose **date ranges overlap**.
-- Time windows are compared on a 24 h circle, so midnight-crossing shifts work. Touching edges (one ends 14:00, the next starts 14:00) do **not** overlap.
-- **Full Day conflicts with Morning, Evening and Night.** Morning and Evening that don't overlap can share the same seat.
+### 1.3 Needs refactoring (no parallel systems)
 
-### R4. Demo expiry job (Phase 4; enforced at scan time from Phase 2)
-A daily cron, plus every 15-minute run (it's idempotent), handles every student with `status = DEMO` and `demoEndDate < now`:
-- Mark them `DEMO_ENDED`, or `EXPIRED` if they had held a paid membership before.
-- End their `SeatAssignment` (status `EXPIRED`, `endDate = now`).
-- Set the seat back to `AVAILABLE` for that shift.
-- Write an audit log entry.
+| Today | Becomes | How (backward compatible) |
+|---|---|---|
+| `Seat.studentId` (one holder per seat) | `SeatAssignment` per (seat, shift, date range) is the source of truth | Migration converts each held seat into an ACTIVE assignment on the student's shift. `Seat.studentId` / `Student.seatNumber` stay as a **mirror** of the student's primary active assignment, so books issue, the student list and the existing forms keep working. `lib/services/seats.ts` keeps its exported signatures and delegates to `seat-assignments.ts`. |
+| Membership dates on `Student` (`membershipStartDate/EndDate`, `paymentStatus`) | `Membership` + `Payment` documents | The migration creates one `Membership` per student from the existing dates. The Student fields stay as a mirror of the *current* membership, so the existing pages and reminder emails keep working. |
+| `/librarian/students` (one flat list) | A tabbed page with the six lists (D13) | Same route. The existing edit/delete dialogs are reused inside the tabs. |
+| `Student.address` (🆕 **existing bug**) | Added to the schema | The Add Student form sends an address, but the model has no `address` field, so Mongoose silently drops it today. Adding the field fixes this; old students simply have none. |
+| `/librarian/students/add` | Unchanged form. Creates an ACTIVE_MEMBER (walk-in). Phase 3 adds plan + payment fields so a Membership and Payment are created too. | Additive. |
+| Seat states available/assigned/occupied/expired | AVAILABLE / REQUESTED / DEMO_HOLD / ASSIGNED / OCCUPIED / EXPIRED per shift | The same seat-map component gains a shift filter and two colours. |
 
-The same applies to `ACTIVE_MEMBER` students whose membership `endDate < now` → `EXPIRED`.
+---
 
-### R5. Expired student QR flow
-For `EXPIRED` or `DEMO_ENDED` (or a lapsed date found at scan time):
-- **Shown:** "Membership expired on <date>", plus a renewal option: the library's phone with a **Call** button and "Ask the librarian to renew". From Phase 3, the available plans are listed too.
-- **No attendance is written.**
-- **Old attendance history is kept**; nothing is deleted or modified.
+## 2. Student lifecycle (single source of truth)
 
-### R6. Minimum payment model (Phase 3)
-- `Payment { libraryId, studentId, membershipId, amount, mode: CASH | UPI | BANK, reference?, receiptNo, status: PAID | PARTIAL | PENDING, paidAt, collectedBy }`.
-- `Membership.fee` minus the sum of `PAID`/`PARTIAL` amounts is **dues**.
-- A membership is fully paid, partial or pending. Online payment is out of scope.
+### 2.1 Statuses and lists
 
-### R7. Seat Utilisation Report (Phase 4)
-Per seat, per shift, for a date range: **seat number, assigned student, shift, present days, absent days, total study hours, last visited date.** Available as CSV and printable.
+| Status | Meaning | Librarian list (tab) | QR scan result | Attendance |
+|---|---|---|---|---|
+| `PENDING` | 🆕 *Not used.* QR registration starts the demo directly. Kept in the enum only so old data and a possible future approval mode still validate. | – | – | ✗ |
+| `DEMO` | Demo running (started from the QR form or by the librarian) | **Demo Students** | Check-in/out | ✓ `entryType=DEMO` |
+| `ACTIVE_MEMBER` | Membership active (paid or partially paid) | **All Students / Active Members** | Check-in/out | ✓ `entryType=MEMBER` |
+| `DEMO_ENDED` | Demo finished, no membership | **Demo Ended / Follow-up** | Activation/renewal screen (R5) | ✗ |
+| `EXPIRED` | Paid membership ended | **Expired Members** | Membership expired screen (R5) | ✗ |
+| `BLOCKED` | Blocked by the librarian | Shown in the list matching `statusBeforeBlock`, with a Blocked badge, plus a "Blocked" filter | Access denied | ✗ |
+| `REJECTED` (internal) | 🆕 Not used (no approval step); kept in the enum | – | – | ✗ |
 
-### R8. Audit logs
-`AuditLog { libraryId?, actorId, actorRole, action, entity, entityId, meta, ip, createdAt }`, written for:
+**Pending Payments** is a cross-cutting list: any student whose current membership has `dueAmount > 0`, whatever their status.
+
+**List movement is purely status-driven.** Every list endpoint filters by `status`, so a status change *is* the move. The UI refetches after every mutation, which means a student activated in the Demo tab disappears from it and appears in All Students straight after the API responds.
+
+### 2.2 Transitions (all server-side, all audited)
+
+```
+QR demo form ─────┐
+                  ├──► DEMO ──activate (fee)──► ACTIVE_MEMBER ──expire──► EXPIRED
+Add Demo Student ─┘     │  ▲                         ▲   │                    │
+(librarian)        end/expire extend                 │   └──────renew─◄───────┘
+                        ▼                            │
+                    DEMO_ENDED ──activate (fee)──────┘
+any ──block──► BLOCKED ──unblock──► status derived again from demo/membership dates
+walk-in (Add Student form) ─────► ACTIVE_MEMBER
+```
+
+The "expire" edges run in three places, all through the same idempotent service function:
+1. the cron (Phase 4),
+2. lazily at scan time (Phase 1+),
+3. lazily when the librarian opens a list (Phase 2+).
+
+That way a missed cron run never shows a stale status.
+
+---
+
+### 2.3 🆕 Two ways in, one lifecycle
+
+| | Manual admission (default) | QR self-registration (only if `otpEnabled`) |
+|---|---|---|
+| Who starts it | Librarian, using the **Add Demo Student** form | Student: scan QR → verify OTP → fill the demo form |
+| Resulting status | **DEMO** immediately | 🆕 **DEMO** immediately (no approval) |
+| Seat | Chosen by the librarian from available seats → `SeatAssignment` **DEMO_HOLD** | 🆕 Chosen by the student from seats free for their shift → **DEMO_HOLD**. If no seat is free, the demo starts without a seat and the librarian assigns one later. |
+| `registrationSource` | `MANUAL` | `QR` |
+| Demo dates | Entered on the form (default start + 3 days, editable) | 🆕 Today → today + `demoDays` (D8); the student can't change them |
+| Attendance | Manual (Present / Absent / Check in / Check out) | 🆕 **Checked in straight after the form** if inside a shift window; then QR scans. Manual is always available too. |
+
+**🆕 Every QR action has a manual equivalent**, so a library that doesn't use QR loses nothing:
+
+| What happens with QR | Same thing done by the librarian |
+|---|---|
+| Unregistered number → demo form → demo starts | **Add Demo Student** form |
+| Registered student scans → check-in / check-out | Attendance page → **Check in / Check out** (or **Present / Absent**) |
+| Expired student scans → renewal screen | Expired Members tab → **Renew** |
+| Student sees seat, shift, days left | Student detail drawer shows the same |
+
+**After that the lifecycle is identical:** Demo → activate (fee) → Active Member → Expired, with the same lists and rules. Manual attendance works whatever the `otpEnabled` setting.
+
+**When `otpEnabled = false`** (the default):
+- **Public QR routes** (`/api/checkin/*`) return **403 `QR_DISABLED`**, and the check-in page shows "QR check-in isn't used at this library — please check in at the desk."
+- **Library QR page:** shows "QR check-in is off" with a link to Settings; download and print are disabled.
+- **Dashboard and sidebar** promote the manual flow:
+  - quick actions "Add Demo Student" and "Take attendance";
+  - "Library QR" stays in the menu with an "Off" badge;
+- **Nothing is deleted:** QR sessions, OTP records and the QR signature stay as they are, so turning the switch on later makes everything work again.
+
+---
+
+## 3. Binding rules
+
+**R1, R2, R5, R8 and R9 are unchanged from the approved plan.** R3, R4 and R6 are refined. R10–R12 are new.
+
+**R1 – Scans.**
+- First scan of a shift occurrence = check-in. Second = check-out. Third and later = "You have already checked out today."
+- A repeat scan within 2 minutes of check-in = "Already checked in" (no check-out).
+- Auto check-out once shift end + 30 min has passed: `checkOutAt = shift end`, `autoCheckedOut = true`.
+- Check-ins are accepted from start − `earlyCheckinMinutes` (default 60) until shift end.
+
+**R2 – Late.**
+- `settings.graceMinutes` (default 15). Late means `checkInAt > shiftStart + grace`.
+- Displayed as "Late by 25 min" / "Late by 1 hour 30 min".
+
+**R3 – Seat conflict (🆕 Phase 2, needed by demo holds).**
+- A seat cannot have two assignments with status `ACTIVE` or `DEMO_HOLD` whose shift time windows overlap (compared on a 24-hour circle; touching edges don't overlap) **and** whose date ranges overlap.
+- Full Day conflicts with Morning, Evening and Night. Non-overlapping Morning (06–14) and Evening (14–24) can share a seat.
+- Enforced by a per-seat atomic lock plus a re-check, and a transaction when available.
+
+**R4 – Demo expiry.**
+- Run by the cron, at scan time and on list reads, for every student with `status = DEMO` and `now > demoEndDate`:
+  - status → `DEMO_ENDED`
+  - their DEMO_HOLD assignment → `EXPIRED` (`endDate = now`)
+  - the seat becomes AVAILABLE for that shift
+  - an audit entry is written
+- Members whose `membership.endDate` has passed are handled the same way → `EXPIRED`, with their seat released.
+
+**R5 – Ended or expired student scans the QR.**
+- They see the end date and a renewal option: the library phone with Call, plus the active plans from Phase 3.
+- No attendance is written; their history is kept.
+
+**R6 – Payments.** See §4.3. Modes are CASH / UPI / BANK_TRANSFER; status is PAID / PARTIAL / PENDING. Receipt numbers are unique per library and come from an atomic counter.
+
+**R7 – Seat Utilisation Report.** Seat, assigned student, shift, present days, absent days, total study hours, last visit.
+
+**R8 – Audit actions.**
 
 | Action | Phase |
 |---|---|
 | Librarian login | 1 |
-| Manual attendance override (check-in, check-out, status change, note) | 1 |
-| Student approval / rejection | 2 |
-| Membership changes (convert, renew, expire) | 3 |
-| Seat assignment / release | 3 |
+| Manual attendance | 1 |
+| Seat assign / release | 1 |
+| Registration | 2 |
+| Demo started (QR or manual) | 2 |
+| Demo extend / end | 2 |
+| Membership activate / renew / expire | 3 |
 | Payment entry | 3 |
-| Library status change (activate/suspend) | 4 |
+| Library status change | 4 |
+| 🆕5 QR/OTP access change, credits added/adjusted, limit change | 2.5 |
 
-Phase 1 also logs QR regeneration and library settings changes.
+**R9 – Notifications (minimal).**
 
-### R9. Notifications (MVP only)
-1. **OTP SMS** (Phase 1)
-2. **Seat assignment confirmation** (Phase 3)
-3. **Membership expiry reminder** (Phase 4, reusing the existing reminder email when the student has an email)
-4. **Payment receipt** (Phase 3)
+| Notification | Phase |
+|---|---|
+| OTP SMS | 1 |
+| Seat-assignment confirmation | 3 |
+| Payment receipt | 3 |
+| Membership expiry reminder | 4 |
 
-Channels are SMS (OTP) and email where an address exists. **No WhatsApp automation.**
+Email where an address exists. No WhatsApp automation.
 
----
+**R10 – Demo.**
+- 🆕 **Manual admission** → `DEMO` straight away, with the dates entered on the form. Default end = start + `demoDays` (D8). The seat is required and becomes a `DEMO_HOLD`.
+- 🆕 **QR demo form** → `DEMO` immediately, `demoStartDate = today`, `demoEndDate = today + demoDays` (D8; `demoDays` default 3). The seat the student picked becomes a `DEMO_HOLD`. If it was taken in the meantime → "That seat was just taken, pick another". If no seat is free at all, the demo starts without one. The student is then **checked in at once** when a shift window is open (R1).
+- 🆕 **One demo per phone per library, ever.** A number that already had a demo (DEMO_ENDED) or membership never sees the form again; it gets the renewal screen (R5).
+- **Extend** by 1–3 days (cumulative cap: 7 extra days). This also extends the DEMO_HOLD.
+- **End now** → DEMO_ENDED immediately (R4 effects).
+- **Activate early** is allowed at any time during the demo.
 
-## 1. What exists today (inspection results)
+**R11 – Activation** is one service call: `activateMembership(student, input)`. Validation and seat availability are checked first, then everything is written:
+- `Membership` (ACTIVE)
+- `Payment` (PAID or PARTIAL, receipt number)
+- `SeatAssignment`: 🆕 the **same document** changes `status` from `DEMO_HOLD` to `ACTIVE` with the membership dates, or a new ACTIVE one if the librarian picks another seat — then the old hold is released)
+- Student → `ACTIVE_MEMBER`, with the mirror fields updated
 
-**Stack**
-- Next.js 16 App Router, React 19, TypeScript.
-- **MongoDB + Mongoose 9.** There is no Prisma; "migrations" means idempotent Node scripts in `scripts/` plus schema changes.
-- Tailwind v4 with shadcn/ui, SWR, zod, date-fns, Cloudinary, nodemailer/Resend.
-- Deployed on Vercel (`@vercel/analytics`; `CRON_SECRET` is already in `.env.example`).
+A Mongo transaction is used where available (Atlas = yes). Without one, writes happen in that order with compensating rollback on failure. Activation is idempotent per request: a client `requestId` is stored on the Payment, so a double click doesn't charge twice.
 
-**Auth**
-- JWT in the httpOnly cookie `authToken`.
-- `proxy.ts` gates `/admin/*` and `/librarian/*` at the edge.
-- `lib/middleware/auth.ts` provides `authenticateRequest`, `requireAdmin`, `requireLibrarian` and `requireAdminOrLibrarian`. It re-checks the DB on every request and includes the trial/plan lock (`ACCESS_LOCKED`).
-- Roles are `admin` and `librarian`. There is no student login.
+**R12 – Seat display states (Phase 3), per selected shift and date:**
 
-**Tenancy (important)**
-- Every tenant document (`Student`, `Seat`, `Book`, `Transaction`, `Message`) is scoped by **`librarianId`** (the owner `User._id`). One librarian is one library.
-- `lib/models/Library.ts` exists but is **unused**: no code imports it and the `libraries` collection doesn't exist in the DB.
-- `Student.libraryId` exists but is never set.
+| State | When |
+|---|---|
+| OCCUPIED | The holder is checked in now |
+| ASSIGNED | An ACTIVE assignment exists |
+| DEMO_HOLD | A DEMO_HOLD assignment exists |
+| REQUESTED | 🆕 Not used without an approval step (kept for a future approval mode) |
+| EXPIRED | Seat inactive, or its holder's membership/demo lapsed and the seat isn't released yet |
+| AVAILABLE | None of the above |
 
-**Live data** (read-only check of the configured DB):
-- Collection counts: 3 librarians, 5 students, 5 seats (all assigned), 1 book, 1 transaction, 1 ad, 0 plans.
-- Phone numbers are stored in **mixed formats** (3 × 10-digit, 2 × `+91…`).
-- There is **1 duplicate phone group** within the same librarian.
-- The DB is a replica set (Atlas), so multi-document transactions are available in production. Local dev may run a standalone `mongod`, so the design must not *depend* on transactions.
+Colours: green available · blue requested · yellow demo hold · purple assigned · red occupied · grey expired/inactive.
 
-**Relevant existing modules**
+**R13 🆕 – QR/OTP switch.**
+- `Library.settings.otpEnabled` (default `false`) gates every route under `/api/checkin/*`: info, OTP send/verify, scan, register.
+- When it is off they return **403 `QR_DISABLED`** before any OTP is generated or any SMS is spent. Manual routes are never gated.
+- Turning it on or off is audited (`library.otp_toggled`).
+- Turning it on while no SMS provider is configured shows a warning in Settings: "Students will see the code on screen (test mode)" or "Text messages are not set up".
 
-| Area | Files | Status |
+**R14 🆕 – Manual attendance** (works for any `otpEnabled` value). Allowed only for students with status `DEMO` or `ACTIVE_MEMBER`, on dates inside their demo or membership period, for today or past dates (never the future). `entryType` comes from the student's status at that date (DEMO/MEMBER) and `source = MANUAL`. Every action is audited.
+
+| Action | Effect |
+|---|---|
+| **Mark Present** | Creates a PRESENT record with `timesRecorded = false` (D17). If a record already exists, it upgrades ABSENT → PRESENT. |
+| **Mark Absent** | Creates an ABSENT record with no times. If the student has already checked in, this needs `force: true` and a note; it clears the check-in. |
+| **Check In** | Records the real time (default now). Present/Late follows R2. 409 if already checked in. |
+| **Check Out** | Records the real time. 409 if not checked in. 400 if earlier than check-in. |
+
+**R15 🆕 – Validation and exact error messages** (manual admission, seat assignment, activation)
+
+| Problem | HTTP | Message |
 |---|---|---|
-| Students | `lib/models/Students.ts`, `app/api/students/*`, `app/librarian/students/*` | Manual add/edit/delete. `paymentStatus` is paid/unpaid/pending; `membershipStatus` is active/inactive/expired. Email is required. |
-| Seats | `lib/models/Seat.ts`, `lib/services/seats.ts`, `app/api/seats/*`, `app/librarian/seats/page.tsx` | One student per seat. No shifts or sections. Status is available/reserved/occupied. |
-| Memberships | `app/librarian/membership/page.tsx`, `app/api/send-reminder` | Dates live on the Student record. No plans, payments or receipts. |
-| Books | `Book`, `Transaction`, `lib/services/transactions.ts` | Issue/return/renew. **Not touched** by this plan beyond the `libraryId` backfill. |
-| Dashboard | `app/librarian/DashboardClient.tsx`, `app/api/dashboard`, `lib/dashboard-data.ts` | Stats and charts. To be extended. |
-| Librarian subscription | `lib/services/access.ts`, `lib/models/Plan.ts`, `app/admin/plans`, `app/api/librarian/access` | Trial, approval request, plan with expiry (built earlier). Reused as the "subscription plans for libraries". |
-| Rate limiting | `lib/rate-limit.ts` | In-memory, so it only works on one instance. Used for OTP as a first line; OTP attempt counters are also kept in the DB (see §7). |
-| Uploads | `lib/cloudinary.ts` | Reused for student photos. |
-| Model registration | `lib/models/define-model.ts` | Reused for every new model. |
-| Tooling | — | **No test framework.** `npm run lint` is declared but eslint isn't installed. Typecheck and build work. |
+| Missing required field | 400 | "Full name is required." / "Mobile number is required." / "Choose a shift." / "Choose a seat." / "Demo start date is required." |
+| Bad phone | 400 | "Enter a valid 10-digit mobile number." (same check for the parent contact) |
+| Duplicate phone, same library | 409 | "This mobile number is already registered to {name}." |
+| Duplicate email, same library | 409 | "This email is already registered to {name}." |
+| Start date in the past | 400 | "Demo start date can't be in the past." |
+| End before start | 400 | "Demo end date must be on or after the start date." |
+| Demo longer than 30 days | 400 | "A demo can be at most 30 days." |
+| Seat taken, same shift and dates | 409 | "Seat {n} is already held by {name} ({shift}) from {d1} to {d2}." |
+| Seat taken by a Full Day booking | 409 | "Seat {n} is booked by {name} for the Full Day shift, which overlaps {selected shift}." |
+| Seat freed and retaken during submit | 409 | "Seat {n} was just taken. Pick another seat." (the availability list refreshes) |
+| Upload too large or wrong type | 400 | "Photo must be a JPG, PNG or WebP under 5 MB." / "ID proof must be a JPG, PNG, WebP or PDF under 5 MB." |
+| Uploads not configured | 503 on the upload only | The form submits without the files and shows "Photo/ID upload isn't set up yet." |
 
 ---
 
-## 2. Key design decisions (backward-compatible)
+## 4. Database changes
 
-### 2.1 Tenant: make `Library` the tenant without breaking `librarianId`
-- Reuse `lib/models/Library.ts`. Add `slug`, `settings`, `status` and `qrVersion`. Keep `ownerId`. Make `subdomain` optional; this is safe because the collection is empty.
-- Add **`User.libraryId`**. Each librarian belongs to exactly one library.
-- **Backfill script.** For every librarian without a library, create one (`name` = "<Name>'s Library", unique `slug`) and set `User.libraryId`. Also set `libraryId` on all their `Student`, `Seat`, `Book`, `Transaction` and `Message` docs.
-- New code scopes by **`libraryId`**. Existing routes keep their `librarianId` filters, and every write now sets **both** fields. Nothing that works today changes behavior.
-- A new guard, **`requireLibraryContext(request)`**, returns `{ userId, role, libraryId }`. It throws 403 if the librarian has no library or the library is suspended. Every new librarian API uses it, and `libraryId` always comes from the session, **never from the request body or query**.
-- **New librarian signups:** the `Library` is created when the OTP is verified, next to the existing trial start.
+All changes are additive. Nothing is dropped. Every new model uses `defineModel` (safe under dev hot reload).
 
-### 2.2 Student lifecycle
-- Add **`Student.status`**: `PENDING | DEMO | ACTIVE_MEMBER | EXPIRED | DEMO_ENDED | REJECTED | BLOCKED`.
-- **Backfill** for existing students: `ACTIVE_MEMBER` if `membershipEndDate > now`, otherwise `EXPIRED`.
-- The legacy fields `paymentStatus` and `membershipStatus` are **kept and mirrored** from `status` and payments, so the existing Students and Memberships pages keep working.
-- `Student.email` becomes **optional**, since QR registrants may have no email. The existing add-student form still asks for it.
-- Phones are stored **normalized to E.164** (`+91XXXXXXXXXX`). The original value is kept in `phoneRaw`.
-- **Unique index `{libraryId, phone}`**, partial on `status != 'REJECTED'`.
-  - Before building it, the migration runs in **report mode**: it prints the duplicate groups (1 today) and refuses to create the unique index until they are resolved.
-  - Until then, a non-unique index is used and check-in picks the most recently updated record. Nothing is deleted automatically.
+### 4.1 New fields on existing models
 
-### 2.3 Seats become shift-aware through assignments
-- **`Seat`** gains:
-  - `libraryId`
-  - `sectionId`
-  - `seatType` (`STANDARD | AC | WINDOW | CABIN | …`, free label)
-  - `isActive`
-  - `lockUntil` (concurrency guard)
+| Model | New fields | Phase |
+|---|---|---|
+| `Student` | 🆕 `registrationSource` (`MANUAL` / `QR`; existing students → `MANUAL`), 🆕 `address` (fixes the dropped-field bug), 🆕 `examTarget`, 🆕 `collegeName`, 🆕 `parentContact` (E.164), 🆕 `notes`, 🆕 `idProof` (`{publicId, format, bytes, uploadedAt}`, private, D16), `photoUrl`, `preferredShiftId`, `preferredSectionId`, `preferredSeatId`, `requestedAt`, `demoStartDate`, `demoEndDate`, `demoExtendedDays` (0–7), `approvedAt`, `approvedBy`, `rejectedAt`, `rejectionReason`, `statusBeforeBlock`, `archivedAt`, `currentMembershipId`. `email` becomes **optional** for QR registrants; the unique email index already ignores missing emails. | 2 / 3 |
+| `Library` | 🆕 `settings.otpEnabled` (**false**, D15), `settings.demoMaxExtensionDays` (7), `settings.allowPartialPayment` (true). `receiptSeq` already exists. | 🆕 1.1 / 2 / 3 |
+| `Attendance` 🆕 | `timesRecorded` (default true; false for Mark Present/Absent, D17) | 2 |
+| `Seat` | `sectionId`, `seatType` (free label, e.g. AC/Window), `isActive`, `lockUntil` | 3 |
+| `StudentOtp` | `dayKey`, `dayCount` (per-phone daily limit) | 1.1 |
 
-  The legacy `status`, `studentId` and `studentName` fields are kept for the existing page. They are updated as a mirror of the student's "primary" assignment.
-- **New `SeatAssignment`** (the source of truth):
-  - `seatId`, `shiftId`, `studentId`, `libraryId`
-  - `kind`: `REQUESTED | DEMO | MEMBER`
-  - `startDate`, `endDate`
-  - `status`: `ACTIVE | RELEASED | EXPIRED`
-- **Displayed seat status is computed** per (shift, date), never stored:
+### 4.2 New models
 
-  | Status | Shown when |
-  |---|---|
-  | `OCCUPIED` | Someone is inside now (open attendance) |
-  | `ASSIGNED` | An active MEMBER assignment exists |
-  | `DEMO_HOLD` | An active DEMO assignment exists |
-  | `REQUESTED` | A pending student chose this seat |
-  | `AVAILABLE` | None of the above |
-  | `EXPIRED` | The seat is inactive, or its assignment ended without release |
+| Model | Key fields | Indexes |
+|---|---|---|
+| `Section` (3) | `libraryId`, `name`, `description`, `sortOrder`, `isActive` | `{libraryId, name}` unique (case-insensitive) |
+| `SeatAssignment` (🆕 **2**) | `libraryId`, `seatId`, `shiftId`, `studentId`, 🆕 `status` (`DEMO_HOLD` / `ACTIVE` / `RELEASED` / `EXPIRED`; one field, matching your spec wording), `startDate`, `endDate`, `membershipId?`, `createdBy`, `releasedAt`, `releasedBy`, `releaseReason` | `{seatId, shiftId, startDate, endDate}`, `{libraryId, studentId, status}`, `{libraryId, status, endDate}` |
+| `MembershipPlan` (3) | `libraryId`, `name`, `durationDays` (30/90/365/custom), `price`, `isActive`, `sortOrder` | `{libraryId, isActive, sortOrder}` |
+| `Membership` (3) | `libraryId`, `studentId`, `planId?`, `planName` (snapshot), `startDate`, `endDate`, `fee` (snapshot), `paidTotal`, `dueAmount`, `paymentStatus` (`PAID` / `PARTIAL` / `PENDING`), `status` (`ACTIVE` / `EXPIRED` / `CANCELLED`), `shiftId`, `seatAssignmentId?`, `createdBy`, `source` (`ACTIVATION` / `RENEWAL` / `MIGRATED` / `WALK_IN`) | `{libraryId, studentId, status}`, `{libraryId, endDate}`, `{libraryId, dueAmount}` |
+| `Payment` (3) | `libraryId`, `studentId`, `membershipId`, `amount` (total fee snapshot), `paidAmount` (this payment), `dueAmount` (remaining after it), `paymentMethod` (`CASH` / `UPI` / `BANK_TRANSFER`), `reference?`, `receiptNumber`, `status` (`PAID` / `PARTIAL` / `PENDING`), `paidAt`, `collectedBy`, `requestId` (idempotency) | `{libraryId, receiptNumber}` unique, `{libraryId, paidAt}`, `{libraryId, studentId, paidAt}`, `{libraryId, requestId}` unique sparse |
+| `ShiftRun` (4) | `libraryId`, `shiftId`, `date`, `ranAt`, `absentMarked`, `autoClosed` | `{libraryId, shiftId, date}` unique (cron idempotency) |
+| `PlatformPayment` (4) | `libraryId`, `planId`, `amount`, `recordedBy`, `periodStart`, `periodEnd` | `{libraryId, createdAt}` |
 
-  This avoids the stale-status drift that the existing `repair-seat-links.mjs` script was written to fix.
-- **Double-booking rule:** a seat can't have two ACTIVE assignments whose **shift time windows overlap** *and* whose **date ranges overlap**. This also blocks "Full Day" against "Morning" on the same seat.
-- **Concurrency:** the seat is locked atomically (`findOneAndUpdate({_id, lockUntil < now}, {lockUntil: now+10s})`), then overlaps are checked, the assignment is inserted, and the lock is released. A Mongo transaction is used when available. This works on standalone dev Mongo too.
-- **Migration:** each library gets a default shift, **"Full Day"** (06:00–22:00, editable). Every currently assigned seat becomes a `MEMBER` assignment on that shift, with `endDate` set to the student's `membershipEndDate`, or open-ended if that's empty.
+**Spec indexes:**
+- `libraryId + phone`: ✅ exists, unique partial.
+- `studentId + date`: ✅ exists.
+- `libraryId + date`: ✅ exists.
+- `seatId + shiftId + date`: ✅ exists on Attendance; Phase 3 adds the SeatAssignment range index.
 
-### 2.4 Memberships, plans, payments
-- **New `MembershipPlan`** (per library): name, `durationDays` (30/90/365/custom), price, `isActive`. This is **separate** from the existing platform `Plan`, which stays as the librarian subscription.
-- **New `Membership`:** `studentId`, `libraryId`, `planId?`, `kind DEMO|MEMBER`, `startDate`, `endDate`, `fee` (a snapshot of the plan price), `status ACTIVE|EXPIRED|CANCELLED`, `shiftId`, `seatId?`.
-  - `Student.membershipStartDate`, `membershipEndDate` and `paymentStatus` mirror the current membership.
-- **New `Payment`:** see **R6** for the exact model (modes CASH/UPI/BANK; status PAID/PARTIAL/PENDING).
-  - `receiptNo` is unique per library and comes from an atomic counter, `Library.receiptSeq`.
-- **Dues** = membership fee − sum of payments. Partial payments are allowed.
+### 4.3 Payment arithmetic (R6/R11)
 
-### 2.5 Shifts and attendance
-- **New `Shift`:** `libraryId`, `name`, `startTime`/`endTime` as `"HH:mm"`, `isActive`, `sortOrder`. `crossesMidnight` is derived (for example, Night 22:00–06:00).
-- All date logic uses the **library timezone** (`settings.timezone`, default `Asia/Kolkata`).
-  - `Attendance.date` is the library-local `YYYY-MM-DD` on which the **shift started**, so a night shift that runs past midnight belongs to the start day.
-- **Student shift (`Student.shiftId`):** the shift a student attends. The migration sets it to the library's "Full Day" shift for existing students. From Phase 3, `SeatAssignment` carries the seat per shift.
-- **New `Attendance`:** every field in the spec, plus `note`, `overriddenBy`, `manuallyEdited`, `autoCheckedOut`, `lateMinutes` and `seatNumber` (seat snapshot). Unique index `{studentId, shiftId, date}` makes duplicate check-ins impossible, even under a double-tap race.
-- **Status fields:**
-  - `arrivalStatus`: `PRESENT | LATE | ABSENT` (R2).
-  - `leftEarly`: boolean, true when check-out is before shift end.
-  - **`status`** is stored for filtering and is always derived:
-    1. `CURRENTLY_INSIDE` while `isInside`
-    2. else `LEFT_EARLY` if `leftEarly`
-    3. else `arrivalStatus`
+`Membership.fee` = total. Each `Payment` has the following fields:
 
-    This keeps "late *and* left early" from losing information.
-  - No check-in by shift end → `ABSENT`. In Phases 1–3 this is shown as a computed "Not checked in / Absent" row in the attendance list; from Phase 4 the cron also writes it.
-- **Scan rules and auto check-out:** see **R1**. When a student has several shifts, the one whose window contains "now" is used.
-
-### 2.6 Student identity, OTP, QR
-- **QR URL:** `https://<app>/checkin/<slug>?k=<sig>`, where `sig = HMAC_SHA256(JWT_SECRET, libraryId + ':' + qrVersion)`, truncated to 16 chars.
-  - The server rejects a missing or invalid `k`.
-  - The librarian can **regenerate the QR**, which bumps `qrVersion` and makes old prints stop working.
-- **New `StudentOtp`:**
-  - `libraryId`, `phone`, `codeHash` (an HMAC of the code, never plaintext)
-  - `expiresAt` (5 min, with a TTL index)
-  - `attempts` (max 5), `sendCount`, `lastSentAt`
-- **Limits:**
-  - 60 s resend cooldown.
-  - Max 5 sends per phone per hour.
-  - Max 30 sends per IP per hour.
-  - Max 500 sends per library per day (cost guard).
-- Codes are compared with `timingSafeEqual`.
-- **Student session:** after verification, a JWT with `{purpose: 'student', libraryId, phone, studentId?}` is set as the httpOnly cookie `studentSession` for 30 days (D2). It is a separate cookie and purpose from the staff `authToken`, so it can never pass staff guards, and staff tokens can never pass student guards.
-
----
-
-## 3. Existing files to reuse or modify
-
-| File | Change |
+| Field | Meaning |
 |---|---|
-| `lib/models/Library.ts` | Add `slug`, `status ACTIVE|SUSPENDED`, `settings {timezone, graceMinutes, demoDays, earlyCheckinMinutes, expiringSoonDays, geofence?}`, `qrVersion`, `receiptSeq`. Make `subdomain` optional. Switch to `defineModel`. |
-| `lib/models/User.ts` | Add `libraryId`. |
-| `lib/models/Students.ts` | Add `status`, `phoneRaw`, `photoUrl`, `preferredShiftId`, `preferredSectionId`, `preferredSeatId`, `demoStartDate`, `demoEndDate`, `rejectionReason`, `notes`. Email becomes optional. Add indexes. Switch to `defineModel`. |
-| `lib/models/Seat.ts` | Add `libraryId`, `sectionId`, `seatType`, `isActive`, `lockUntil`. Extend the legacy status enum (additive). |
-| `lib/models/Book.ts`, `Transaction.ts`, `Message.ts` | Add an optional `libraryId` (backfilled). |
-| `lib/middleware/auth.ts` | Add `requireLibraryContext`, `requireStudentSession`, `getStudentSession`. |
-| `lib/services/seats.ts` | Re-implement on top of `SeatAssignment`, keeping the same exported function signatures, which `/api/students` and `/api/seats` already call. |
-| `app/api/students/route.ts`, `[id]/route.ts` | Normalize phone; set `libraryId` and `status`; on create, also create a `Membership` (and a `Payment` if marked paid). Response shapes unchanged. |
-| `app/api/seats/*` | Add `libraryId`, `sectionId`, `seatType`; refuse to delete seats with active assignments. |
-| `app/api/auth/verify-otp/route.ts` | Create the `Library` for a new librarian. |
-| `app/api/admin/librarians/*`, `app/api/admin/stats` | Include library info and per-library stats. |
-| `app/librarian/seats/page.tsx` | Rebuilt as the **color-coded seat map** with section/shift filters. The current actions (assign/release) are kept. |
-| `app/librarian/DashboardClient.tsx` | New widgets (§6.2). |
-| `app/librarian/membership/page.tsx` | Uses `Membership`, `Payment` and dues. |
-| `components/librarian/sidebar.tsx`, `bottom-nav.tsx` | New nav items. |
-| `app/admin/layout.tsx`, `bottom-nav` tabs | Libraries and Audit log items. |
-| `lib/api.ts` | Client methods for all new endpoints. |
-| `lib/email-service.ts` | Optional emails: new student request to librarian, receipt to student when an email exists. |
-| `lib/cloudinary.ts` | `uploadStudentPhoto`. |
-| `proxy.ts` | No change. `/checkin` and `/my-library` are public pages and are protected by the student session in their APIs. |
+| `paidAmount` | This instalment |
+| `amount` | The fee snapshot |
+| `dueAmount` | `fee − paidTotal` after this payment |
+| `status` | `PAID` if `dueAmount = 0`, `PARTIAL` if `0 < dueAmount < fee`, `PENDING` if `paidAmount = 0` |
 
----
+The membership mirrors `paidTotal`, `dueAmount` and `paymentStatus`. Amounts are stored in **whole rupees (integers)** to avoid float errors. Overpayment is refused.
 
-## 4. New files
+### 4.4 Backfill and migration (re-runnable, dry-run first)
 
-**Models** (`lib/models/`): `Shift.ts`, `Section.ts`, `SeatAssignment.ts`, `MembershipPlan.ts`, `Membership.ts`, `Payment.ts`, `Attendance.ts`, `StudentOtp.ts`, `AuditLog.ts`, `PlatformPayment.ts`, `ShiftRun.ts` (cron idempotency).
+All of these live in `scripts/migrate-libraries.ts`; each phase adds a step.
 
-**Services** (`lib/services/`):
+| Step | Phase | What it does |
+|---|---|---|
+| 1 | 1 ✅ | Libraries, `libraryId` backfill, E.164 phones, status from dates, default shift, unique phone/email indexes when clean, duplicate report |
+| 1.1 🆕 | 1.1 | Set `settings.otpEnabled = false` on every library that doesn't have the field yet (D15) |
+| 2 | 2 | Set `registrationSource: 'MANUAL'` on existing students. Convert each held seat into an `ACTIVE` `SeatAssignment` on the student's shift (moved from step 3). Ensure `demoDays` is in settings. |
+| 3 | 3 | For each student with membership dates, create `Membership` (`source: MIGRATED`, `fee: 0`, PAID if `paymentStatus = paid`, else PENDING with `dueAmount 0`; amounts are never invented). Create a default "General" section. |
+| 4 | 4 | `ShiftRun` / `PlatformPayment` indexes. Nothing to backfill. |
 
-| File | Responsibility |
-|---|---|
-| `library.ts` | Context, slug generation, settings defaults, QR signing |
-| `time.ts` | Library-timezone helpers, shift windows, overlap math (pure, unit-tested) |
-| `shifts.ts` | Shift CRUD rules |
-| `seat-assignments.ts` | Assign, change, vacate, overlap check, lock, seat-map computation |
-| `student-otp.ts` | Send, verify, rate limits, `OtpChannel` interface |
-| `otp-channels/console.ts`, `otp-channels/msg91.ts` | OTP delivery implementations |
-| `checkin.ts` | The scan state machine (§5.2) |
-| `attendance.ts` | Status calculation, manual overrides |
-| `memberships.ts` | Demo creation, conversion, renewal, expiry, dues |
-| `payments.ts` | Receipt numbers, recording payments |
-| `reports.ts` | Aggregations and CSV builder |
-| `audit.ts` | `logAudit(actor, action, entity, meta)` |
-| `cron.ts` | Shift-close and expiry jobs |
+**Order in production:**
+1. Deploy code that reads old and new shapes.
+2. Run the dry run.
+3. Run `--apply`.
+4. Enable the cron.
 
-**Other lib files**
-- `lib/phone.ts`: E.164 normalization (unit-tested).
-- `lib/validation-library.ts`: zod schemas for every new form and API.
-
-**Scripts**
-- `scripts/migrate-libraries.mjs`: `--dry-run` by default, `--apply` to write; idempotent.
-- `scripts/report-duplicate-phones.mjs`
-
-**Tests:** `tests/*.test.ts` (vitest) and `scripts/e2e-checkin.sh` (curl flow against a throwaway local DB, the same approach used in earlier sessions).
-
-**Pages:** see §6.
+Each phase's code works before its migration step has run (lazy fallbacks), so a deploy is never broken by ordering.
 
 ---
 
 ## 5. API endpoints
 
-All librarian endpoints use `requireLibraryContext`: `libraryId` comes from the session, every query filters by it, and IDs from other libraries return **404** (not 403) so they can't be probed. Mutations write to `AuditLog`.
+Conventions:
+- Responses are `{ success, data?, message?, error?, code? }`.
+- Validation uses zod and returns 400 with `issues`.
+- Another library's IDs return **404**.
+- Every mutation is audited.
 
-### 5.1 Public / student (QR flow)
+Roles:
+- **L** = librarian, via `requireLibraryContext`.
+- **A** = admin, via `requireAdmin`.
+- **S** = student, via the per-library session cookie plus a valid QR `k`.
+- **P** = public.
+- **C** = cron, via `Authorization: Bearer $CRON_SECRET`.
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/checkin/[slug]?k=` | Validate QR. Return library name, status, active shifts, sections, geofence on/off. No personal data. |
-| POST | `/api/checkin/[slug]/otp/send` | `{phone, k}` → send OTP (rate-limited). |
-| POST | `/api/checkin/[slug]/otp/verify` | `{phone, code, k}` → set the `studentSession` cookie and return `{studentState}`. |
-| GET | `/api/checkin/[slug]/availability?shiftId=` | Available seats and sections for the registration form (student session required). |
-| POST | `/api/checkin/[slug]/register` | multipart: name, photo, shift, section, optional seat → `PENDING` student plus a `REQUESTED` hold. |
-| POST | `/api/checkin/[slug]/scan` | `{k, lat?, lng?}` → state machine (§5.2); returns the result screen payload. |
-| GET | `/api/my-library` | Seat, shift, membership, days left, attendance history, study hours, dues, receipts. |
-| GET | `/api/my-library/receipts/[id]` | Receipt data (only if it belongs to this student). |
-| POST | `/api/checkin/[slug]/logout` | Clear the student session. |
+### 5.1 Phase 1 (exists): summary
 
-### 5.2 Scan state machine (`lib/services/checkin.ts`)
-
-1. **Library not active** (suspended, or past the D4 grace period) → `LIBRARY_UNAVAILABLE`.
-2. **Optional geofence:** location outside the radius or not shared → `OUT_OF_RANGE`.
-3. **Student lookup** by `libraryId + phone`:
-   - None → `NEEDS_REGISTRATION`
-   - `PENDING` → `AWAITING_APPROVAL`
-   - `REJECTED` → `REJECTED` with reason; may re-register after 24 h
-   - `BLOCKED` → `ACCESS_DENIED`
-   - `EXPIRED` / `DEMO_ENDED` → `RENEWAL_REQUIRED`
-4. **Validity:**
-   - `DEMO` with `demoEndDate` passed → set `DEMO_ENDED`, release the seat → `RENEWAL_REQUIRED`.
-   - `ACTIVE_MEMBER` with membership ended → set `EXPIRED`, release the seat → `RENEWAL_REQUIRED`.
-5. **Shift:** pick the student's shift whose window contains now. None → `OUTSIDE_SHIFT_HOURS`, with the next start time.
-6. **Attendance** for (student, shift, date):
-   - None → insert check-in (`PRESENT`/`LATE`, `entryType` DEMO|MEMBER, `source` QR) → `CHECKED_IN`
-   - Open → set check-out, `totalMinutes`, and `LEFT_EARLY` if before shift end → `CHECKED_OUT`
-   - Closed → `ALREADY_CHECKED_OUT`
-   - Absent (cron already ran) but the student arrives → convert to `LATE` check-in
-7. **Expiry warning:** membership days left ≤ `expiringSoonDays` → `warning: EXPIRING_SOON`.
-
-### 5.3 Librarian
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET/PATCH | `/api/library` | Own library profile and settings (grace, timezone, demo days, geofence) |
-| GET | `/api/library/qr` | QR URL and PNG/SVG data |
-| POST | `/api/library/qr/rotate` | Bump `qrVersion` |
-| GET/POST | `/api/shifts` | List / create |
-| PATCH | `/api/shifts/[id]` | Edit, activate/deactivate (blocked while active assignments exist, unless forced with reassignment) |
-| GET/POST | `/api/sections` | List / create |
-| PATCH/DELETE | `/api/sections/[id]` | Edit / delete |
-| GET | `/api/seats` | *(existing, extended)* `?sectionId=` filter |
-| POST | `/api/seats/bulk` | Create a range, e.g. A1–A40 |
-| GET | `/api/seats/map?shiftId=&date=` | Computed statuses for the live map |
-| POST | `/api/seat-assignments` | Assign |
-| PATCH | `/api/seat-assignments/[id]` | Change seat/shift/dates |
-| DELETE | `/api/seat-assignments/[id]` | Vacate/release |
-| GET | `/api/student-requests` | Pending registrations |
-| POST | `/api/student-requests/[id]/approve` | Creates a DEMO membership (demo days from settings) plus a DEMO seat hold if one is available |
-| POST | `/api/student-requests/[id]/reject` | `{reason}` |
-| GET | `/api/students?status=` | *(existing, extended)* filter by lifecycle status |
-| POST | `/api/students/[id]/convert` | Plan or custom dates, fee, payment, final seat + shift → `ACTIVE_MEMBER` + receipt |
-| POST | `/api/students/[id]/renew` | Renew membership |
-| PATCH | `/api/students/[id]/status` | Block/unblock |
-| GET/POST | `/api/membership-plans` | List / create |
-| PATCH | `/api/membership-plans/[id]` | Edit |
-| GET/POST | `/api/payments` | List (dues view) / record payment |
-| GET | `/api/payments/[id]/receipt` | Receipt data |
-| GET | `/api/attendance?date=&shiftId=&status=` | Today's list, Currently Inside |
-| POST | `/api/attendance/manual` | Manual check-in or check-out |
-| PATCH | `/api/attendance/[id]` | Change status, convert absent→present, add note (stores `overriddenBy`) |
-| GET | `/api/reports/[type]?from=&to=&shiftId=&format=json\|csv` | `type` ∈ daily, monthly, shift, occupancy, fees, expiring, absent |
-
-### 5.4 Admin
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET/POST | `/api/admin/libraries` | List with stats / create library + owner librarian (pre-verified, optional plan) |
-| GET/PATCH | `/api/admin/libraries/[id]` | Edit; `status` ACTIVE/SUSPENDED |
-| POST | `/api/admin/libraries/[id]/librarians` | Assign/move a librarian to this library |
-| PATCH | `/api/admin/librarians/[id]` | *(existing)* Deactivate |
-| GET | `/api/admin/reports/revenue?from=&to=` | Platform revenue from `PlatformPayment`, subscriptions by plan |
-| GET | `/api/admin/audit-logs?libraryId=&action=&from=&to=` | Audit log |
-
-Existing `/api/admin/plans`, `/api/admin/librarians/*` and the approval flow are unchanged. Approving a librarian with a plan now also writes a `PlatformPayment` (amount = plan price, status `RECORDED`) so revenue reports have data.
-
-### 5.5 Cron
-
-- `POST /api/cron/attendance`, header `Authorization: Bearer $CRON_SECRET`.
-- For each active library and each shift whose end has passed in library time:
-  - Insert `ABSENT` for active/demo students assigned to that shift with no record.
-  - Auto check-out open records at shift end.
-  - Keyed by `ShiftRun {libraryId, shiftId, date}` (unique), so it runs at most once per shift per day.
-- It catches up on up to 3 missed days.
-- It also expires demos and memberships and releases their seats.
-
----
-
-## 6. Frontend pages
-
-### 6.1 Student (public, mobile-first, no app chrome)
-
-**`/checkin/[slug]`**: one page with these steps:
-
-- **Phone**: enter phone number.
-- **OTP**: 6-box input, resend countdown.
-- **Register**: name, photo (camera capture), shift, section, optional seat picked from the availability grid.
-- **Result**: one of the following screens.
-  - Checked in: library, name, seat, shift + timing, membership status, days left, check-in time, Present/Late badge, expiring-soon warning.
-  - Checked out: check-out time, total study time, seat, library.
-  - Already checked out.
-  - Awaiting approval.
-  - Renewal required (with the library's phone).
-  - Access denied.
-  - Outside shift hours.
-  - Library unavailable.
-  - Out of range.
-- A visible session lets the student scan straight to the result (D2).
-
-**`/my-library`**: seat, shift timing, library, membership status and days left, attendance history (paged), total study hours, dues, receipts, renewal status, log out.
-
-**`/receipt/[id]`**: printable receipt. Available to the student via session and to the librarian.
-
-### 6.2 Librarian (existing layout and access gate; new sidebar items)
-
-| Page | Content |
-|---|---|
-| `/librarian` *(extended)* | Cards: Inside now, Present, Late, Absent, New requests, Demo students, Expiring (7 d), Pending dues. Mini live seat map. Requests panel with Approve / Reject / Assign seat. |
-| `/librarian/library-qr` | QR preview, Download PNG, Print (A4 poster layout), Regenerate (with confirm), copy link |
-| `/librarian/shifts` | Table plus create/edit dialog, activate toggle |
-| `/librarian/seats` *(rebuilt)* | Section and shift tabs; color-coded grid (green available / blue requested / yellow demo hold / purple assigned / red occupied / gray inactive or expired); seat drawer with assign / change / vacate; section manager; bulk-add seats |
-| `/librarian/requests` | Pending registrations with photo, shift, preferred seat; approve (choose demo seat) or reject |
-| `/librarian/students` *(extended)* | Status filter tabs: Pending, Demo (days left), Active (expiry), Expired, Blocked. Row actions: Convert to member, Renew, Block |
-| `/librarian/attendance` | Date and shift filters; tabs Present / Late / Absent / Inside; manual check-in and check-out; edit status/note |
-| `/librarian/membership` *(extended)* | Membership plans manager; expiring list; dues with "Collect payment"; receipts |
-| `/librarian/reports` | Report type, date range, shift; table preview; **Export CSV**; **Print / Save PDF** |
-| `/librarian/settings` *(extended)* | Library profile, timezone, grace minutes, demo days, geofence |
-
-Bottom nav (mobile): Home, Students, Seats, **Attendance**, More.
-
-### 6.3 Admin
-
-| Page | Content |
-|---|---|
-| `/admin/libraries` | Table (students, seats, active members, today's attendance, revenue), create library + librarian dialog, suspend/activate |
-| `/admin/libraries/[id]` | Detail, stats, librarians, settings, recent audit events |
-| `/admin/reports` | Platform revenue, subscriptions by plan, libraries growth |
-| `/admin/audit-logs` | Filterable table |
-
-Every screen gets loading skeletons, empty state, error state with retry, toasts on success, labelled inputs, keyboard-reachable dialogs, and 44 px touch targets on student pages.
-
----
-
-## 7. Role-based permissions
-
-| Capability | Admin | Librarian (own library only) | Student (session for one library) |
+| Method | Route | Role | Notes |
 |---|---|---|---|
-| Create/suspend libraries, create/assign librarians | ✅ | ❌ | ❌ |
-| Platform plans, revenue, audit logs (all) | ✅ | ❌ | ❌ |
-| View any library's stats | ✅ (read) | Own only | ❌ |
-| Shifts, sections, seats, membership plans, settings, QR | ❌ (read via library detail) | ✅ | ❌ |
-| Approve/reject requests, convert, renew, block | ❌ | ✅ | ❌ |
-| Assign/change/vacate seats | ❌ | ✅ | Request preferred seat only |
-| Attendance manual override, reports, CSV/PDF | ❌ | ✅ | ❌ |
-| Check in/out via QR | ❌ | ❌ | ✅ (own record) |
-| View own seat/membership/attendance/receipts | — | — | ✅ |
+| GET | `/api/checkin/[slug]?k=` | P | Library name/phone, available, timezone, geofence, masked session. 404 on bad QR. |
+| POST | `/api/checkin/[slug]/otp/send` | P | `{k, phone}` → `{resendInSeconds, devCode?}`. Errors: 400 bad phone, 429 cooldown/limits, 503 SMS not configured, 502 provider failed. |
+| POST | `/api/checkin/[slug]/otp/verify` | P | `{k, phone, code}` → sets cookie. Errors: 400 wrong/expired code, 429 locked. |
+| POST | `/api/checkin/[slug]/scan` | S | `{k, location?}` → ScanResult (outcomes in §1.1). Error: 401 `SESSION_REQUIRED`. |
+| POST | `/api/checkin/[slug]/logout` | S | Clears the session. |
+| GET, PATCH | `/api/library` | L | Profile and settings. |
+| GET | `/api/library/qr` | L | url, png, svg. |
+| POST | `/api/library/qr/rotate` | L | Regenerate. |
+| GET, POST | `/api/shifts` | L | |
+| PATCH, DELETE | `/api/shifts/[id]` | L | 409 when in use. |
+| GET | `/api/attendance?date&shiftId` | L | Records + notCheckedIn + counts. |
+| POST | `/api/attendance/manual` | L | `{studentId, shiftId, date, action, time?, note?}`. 409 duplicate, 400 future. |
+| PATCH | `/api/attendance/[id]` | L | `{arrivalStatus?, note?}` |
+| GET, POST | `/api/seats` | L | List with live state; one seat or a range. |
+| GET, PUT, DELETE | `/api/seats/[id]` | L | Assign / release / notes. 409 taken/blocked/assigned. |
+| POST | `/api/seats/release-expired` | L | |
+| GET, POST | `/api/students` | L | Existing; adds phone/email uniqueness and shift. |
+| PUT, DELETE | `/api/students/[id]` | L | Existing; adds block/unblock and shift. |
 
-**Enforcement**
-- `requireAdmin` (existing).
-- `requireLibraryContext`, which also applies the existing trial lock.
-- `requireStudentSession`, which checks that the session's `libraryId` equals the `slug`'s library.
-- Each service function takes `libraryId` as its first argument, and every query filters by it.
-- A regression test calls each librarian endpoint with library B's IDs while logged in to library A and expects 404.
+### 5.1a 🆕 Phase 1.1 changes
 
----
+| Method | Route | Role | Change | Errors |
+|---|---|---|---|---|
+| PATCH | `/api/library` | L | Accepts `settings.otpEnabled: boolean` (audited `library.otp_toggled`). The response includes `smsConfigured` and `smsTestMode` for the Settings warning. | 400 |
+| * | `/api/checkin/[slug]/*` | P/S | Gated by R13. GET returns `{qrEnabled:false, library}` (so the page can show the desk message). Every POST returns 403 `QR_DISABLED`. | 403 `QR_DISABLED` |
 
-## 8. Database changes and migration
+### 5.2 Phase 2: registration, approval, demo
 
-**No data is dropped. All changes are additive.**
+| Method | Route | Role | Request | Response | Errors |
+|---|---|---|---|---|---|
+| GET | `/api/checkin/[slug]/options?k=` | S | – | Active shifts; sections; free seats per shift. Seats are a plain list until Phase 3; then per-shift availability. | 401, 404 |
+| POST | `/api/checkin/[slug]/register` | S | multipart: `k`, `name`* (2–80), `photo?` (jpeg/png/webp ≤ 5 MB), `shiftId`*, `seatId?` (required when any seat is free for that shift), `email?`, `examTarget?`, `collegeName?`, `parentContact?` | 🆕 `{student (DEMO, registrationSource QR), seatAssignment (DEMO_HOLD) or null, scan: ScanResult}`: the demo has started and, when a shift window is open, the student is already checked in | R15 messages; 409 this phone already has a record (returns its current state instead: attendance, renewal, …); 409 seat just taken; 404 shift/seat not in this library; 403 `QR_DISABLED`; upload unavailable → registered without a photo |
+| GET 🆕 | `/api/seats/availability?shiftId&from&to` | L | – | Every active seat with `available: boolean` and, when taken, `{studentName, shiftName, from, to, fullDayConflict}` (R3) | 400 bad dates, 404 shift |
+| POST 🆕 | `/api/students/demo` | L | **multipart:** `name`*, `phone`*, `shiftId`*, `seatId`*, `demoStartDate`*, `demoEndDate` (default start + `demoDays`), `photo?`, `idProof?`, `email?`, `address?`, `examTarget?`, `collegeName?`, `parentContact?`, `notes?` (* required) | `{student (DEMO, registrationSource MANUAL), seatAssignment (DEMO_HOLD), photoUrl?, warnings[]}` | All of R15. Writes happen under a seat lock (R3), and a transaction when available. If an upload fails, the student is still created and `warnings` explains it. |
+| GET 🆕 | `/api/students/[id]/id-proof` | L | – | `{url}`: a signed link that expires in 5 minutes (D16) | 404 none / other library |
+| POST 🆕 | `/api/attendance/manual` (extended) | L | `{studentId, shiftId, date, action: 'present'\|'absent'\|'checkin'\|'checkout', time?, note?, force?}` | Attendance record | R14: 409 student not DEMO/ACTIVE_MEMBER; 409 date outside demo/membership; 400 future date; 409 already checked in / not checked in; 409 absent over a check-in without `force` |
+| GET | `/api/students/lists?tab=` | L | `tab` = demo / active / demo-ended / expired / payments / blocked | Rows with the per-tab columns of §6.2, plus counts for every tab. Runs the R4 lazy sweep first. | 400 bad tab |
+| POST | `/api/students/[id]/demo/extend` | L | `{days: 1–3}` | New `demoEndDate` | 409 not DEMO; 409 over the cap |
+| POST | `/api/students/[id]/demo/end` | L | `{reason?}` | Student (DEMO_ENDED) | 409 not DEMO |
+| POST | `/api/students/[id]/archive` | L | – | `archivedAt` | 409 only DEMO_ENDED / EXPIRED |
 
-**`scripts/migrate-libraries.mjs`**: dry-run by default, prints planned changes; `--apply` writes them. Safe to re-run.
+The scan (Phase 1 route) is extended. Unregistered number → `NEEDS_REGISTRATION` (the page shows the demo form instead of "Not registered"). DEMO → checks the demo dates and writes `entryType: DEMO`. Number with a past demo or membership → R5 renewal screen.
 
-1. Create a `Library` per librarian that lacks one: unique slug from the name plus a short suffix, default settings, `qrVersion: 1`. Set `User.libraryId`.
-2. Backfill `libraryId` on `students`, `seats`, `books`, `transactions` and `messages` from `librarianId`.
-3. Students:
-   - Set `status`: `ACTIVE_MEMBER` if `membershipEndDate > now`, otherwise `EXPIRED`.
-   - Normalize `phone` to E.164 and copy the original to `phoneRaw`.
-   - Create a `Membership` from the existing dates, and a `Payment` only if `paymentStatus = paid` with fee `0` and `mode OTHER`, marked "migrated". This avoids inventing amounts.
-4. Create the "Full Day" shift per library. Convert each seat with `studentId` into a `MEMBER` `SeatAssignment`.
-5. **Indexes**, created after the backfill:
+### 5.3 Phase 3: membership, payments, seats
 
-   | Collection | Index |
-   |---|---|
-   | `students` | `{libraryId, phone}` (unique, partial; **skipped with a report if duplicates exist**) |
-   | `students` | `{libraryId, status}` |
-   | `attendance` | `{studentId, date}` |
-   | `attendance` | `{libraryId, date}` |
-   | `attendance` | `{studentId, shiftId, date}` (unique) |
-   | `attendance` | `{libraryId, isInside}` |
-   | `seatassignments` | `{seatId, shiftId, startDate, endDate}` |
-   | `seatassignments` | `{libraryId, studentId, status}` |
-   | `studentotps` | `{libraryId, phone}` |
-   | `studentotps` | `{expiresAt}` (TTL) |
-   | `memberships` | `{libraryId, endDate}` |
-   | `payments` | `{libraryId, paidAt}` |
-   | `payments` | `{libraryId, receiptNo}` (unique) |
-   | `auditlogs` | `{libraryId, createdAt}` |
-   | `libraries` | `{slug}` (unique) |
-   | `shiftruns` | `{libraryId, shiftId, date}` (unique) |
+| Method | Route | Role | Request | Response | Errors |
+|---|---|---|---|---|---|
+| GET, POST | `/api/membership-plans` | L | `{name, durationDays, price, isActive?}` | Plans | 400; 409 duplicate name |
+| PATCH | `/api/membership-plans/[id]` | L | Partial | Plan | 404 |
+| POST | `/api/students/[id]/activate` | L | `{planId? \| startDate+endDate+fee, shiftId, seatId? (keep demo seat if omitted), payment:{paidAmount, method, reference?}, requestId}` | `{student, membership, payment, receiptNumber, seatAssignment}` | 409 not DEMO/DEMO_ENDED/EXPIRED; 409 seat conflict (R3, with the conflicting assignment); 400 paid > fee; 400 partial not allowed by settings; 400 end ≤ start; 200 replay of the same `requestId` |
+| POST | `/api/students/[id]/renew` | L | Same as activate; starts at old end or today, whichever is later | Same | 409 BLOCKED |
+| POST | `/api/memberships/[id]/payments` | L | `{paidAmount, method, reference?, requestId}` | Payment + updated dues | 400 > due; 409 nothing due |
+| GET | `/api/payments?due=true&from&to` | L | – | Pending Payments rows (fee, paid, due, history) / payment list | – |
+| GET | `/api/payments/[id]/receipt` | L/S | – | Receipt data (library, student, plan, period, amounts, method, receiptNumber, collectedBy) | 404 (other student/library) |
+| GET, POST | `/api/sections` | L | `{name, description?}` | Sections | 409 duplicate |
+| PATCH, DELETE | `/api/sections/[id]` | L | – | – | 409 seats in section |
+| GET | `/api/seats/map?shiftId&date` | L | – | Seats with R12 state, holder, section | – |
+| GET | `/api/seats/availability?shiftId&from&to` | L/S | – | Free seats under R3 | – |
+| POST | `/api/seat-assignments` | L | `{studentId, seatId, shiftId, startDate, endDate, kind}` | Assignment | 409 R3 conflict, 409 BLOCKED |
+| PATCH | `/api/seat-assignments/[id]` | L | `{seatId?, endDate?}` (change seat) | Assignment | 409 R3 |
+| DELETE | `/api/seat-assignments/[id]` | L | `{reason?}` | Released | – |
+| GET | `/api/seats/[id]/history` | L | – | Assignments over time | – |
 
-   The spec's `seatId + shiftId + date` index lives on `attendance` plus the `seatassignments` range index.
-6. **Phone normalization can create new duplicates** (`9876543210` and `+919876543210` are the same person). The script reports these together with the 1 existing duplicate group. The librarian merges or deletes them from the UI before the unique index is created. No automatic merging.
+### 5.4 Phase 4: cron, reports, receipts, admin
 
-**Rollback:** every change is additive. Old code ignores new fields, and the old filters (`librarianId`) still match every document.
-
-**Order in production:** deploy code that writes both fields → run the migration dry-run → run `--apply` → enable the cron.
-
----
-
-## 9. Edge cases handled
-
-**Time and shifts**
-- Night shift across midnight: attendance dated to the shift's start day; absent marking runs after the real end.
-- Overlapping shifts (Full Day vs Morning) on one seat are blocked by time-window overlap, not just `shiftId` equality.
-- A student with two shifts gets attendance per shift; a scan picks the shift whose window contains now.
-- Scan before the early window or after shift end → "Outside shift hours" with the next start time.
-- Shift edited or deactivated while assignments exist: an edit that would create overlaps is rejected; deactivation requires reassigning first.
-- Library timezone differs from the server's UTC: all "today" and window math goes through `time.ts`.
-
-**Expiry timing**
-- Demo or membership ends mid-session: check-out is still allowed; the next check-in is refused.
-- The cron is late or misses a run: scan-time validation still blocks expired students; the cron catches up on missed days, and `ShiftRun` keeps it idempotent.
-- A student arrives after the cron marked them absent: the record converts to a `LATE` check-in.
-
-**Scanning and attendance**
-- Double-tap or two devices scanning at once: the unique index makes exactly one check-in win, and the other reads the existing record.
-- Scan after check-out → "You have already checked out today" (only for that shift).
-- Manual override of attendance stores `overriddenBy`, a note and an audit entry; cron and scans never overwrite a manually edited record.
-
-**Seats**
-- Seat deleted or deactivated with an active assignment: delete is blocked; deactivate is allowed only after vacating.
-- Preferred seat taken by the time the librarian approves: approval shows the conflict and lets them pick another seat or approve without one.
-- Concurrent assignment of one seat by two tabs: the seat lock plus re-check means the second gets "Seat just taken".
-
-**Students and registration**
-- Same phone at two libraries: allowed (separate students, separate sessions).
-- Rejected student re-registers: allowed after 24 h; the old record stays `REJECTED` (partial unique index).
-- Blocked student: access denied; the librarian can unblock.
-- Student changes phone: librarian edits the phone; the old session stops matching.
-- Photo upload: JPEG/PNG/WebP, ≤ 5 MB, resized by Cloudinary. If uploads aren't configured, registration still works without a photo.
-
-**OTP and QR**
-- OTP brute force: 5 attempts per code, codes are hashed, 5-minute expiry, send limits per phone/IP/library, constant-time compare.
-- Old printed QR after regeneration → "This QR code is no longer valid. Ask the librarian for the new one."
-- Library suspended or plan lapsed → check-in shows "Library temporarily unavailable" (D4).
-
-**Plans and payments**
-- Plan price changes after purchase: the fee is snapshotted on `Membership`.
-- Partial payment: dues show the remainder.
-- Receipt numbers never collide: atomic per-library counter.
-
-**Existing data**
-- Existing students with no phone/email edge cases: none have a missing phone (verified). Email becomes optional, so QR registrants without email are fine.
+| Method | Route | Role | Notes |
+|---|---|---|---|
+| POST | `/api/cron/attendance` | C | Auto check-out (R1), ABSENT for active/demo students after shift end (ShiftRun-idempotent, 3-day catch-up), R4 demo/membership expiry + seat release, expiry reminders. Returns per-library counts. 401 on wrong secret. |
+| GET | `/api/reports/[type]?from&to&shiftId&format=json\|csv` | L | `type` ∈ daily, monthly, shift, occupancy, seat-utilisation (R7), fees, expiring, absent |
+| GET | `/api/my-library` | S | Seat, shift, library, status, days left, attendance history (paged), total study hours, dues, receipts, renewal status |
+| GET, POST | `/api/admin/libraries` | A | List with stats / create library + owner librarian |
+| GET, PATCH | `/api/admin/libraries/[id]` | A | Edit; `status` ACTIVE/SUSPENDED (audited) |
+| POST | `/api/admin/libraries/[id]/librarians` | A | Assign/move a librarian |
+| GET | `/api/admin/reports/revenue` | A | Platform revenue (`PlatformPayment`), subscriptions by plan |
+| GET | `/api/admin/audit-logs` | A | Filter by library, action, date |
 
 ---
 
-## 10. Testing
+## 6. Frontend
 
-- **Unit (vitest):**
-  - `time.ts` (windows, midnight crossing, timezone)
-  - attendance status calculation (present/late/left early)
-  - seat overlap logic
-  - `phone.ts` normalization
-  - OTP hash/verify and attempt limits
-  - QR signature verify
-  - the check-in state machine with a stubbed repository
-- **End to end** (`scripts/e2e-checkin.sh`, throwaway local `mongod` and a production build, real DB never touched), covering all 16 acceptance criteria:
-  - Admin creates library + librarian → librarian logs in → creates sections, seats, shifts → gets QR.
-  - Student OTP (console channel) → register → librarian approves → DEMO.
-  - Scan → DEMO check-in → second scan check-out → third scan already-out.
-  - Convert → MEMBER attendance.
-  - Time-travel by editing dates in the DB → cron marks absent and expires the demo → scan shows renewal.
-  - Library A token against library B IDs → 404 on every endpoint.
-- **Visual:** headless screenshots of the student check-in screens at 390 px and the seat map at desktop width.
-- **Gates before done:** `tsc --noEmit`, `npm run build`, vitest, the e2e script. `npm run lint` can't run (eslint isn't installed). I'll leave it as is and report it, unless you want eslint added.
+### 6.1 Student (mobile-first, no app chrome): `/checkin/[slug]`
+
+| Step | Phase |
+|---|---|
+| Phone → OTP | 1 ✅ |
+| 🆕 **Demo form** (shown when the number isn't registered): name, photo (camera), shift, seat from the free-seat grid, and optional email, exam target, college, parent contact | 2 |
+| 🆕 After the form: "Your 3-day demo has started! You're checked in." (or "Your demo has started. Scan again during your shift to check in."). Result screens: checked in, checked out, already out, renewal/expired (R5) with Call and plans, access denied, outside hours, unavailable, out of range | 1 ✅, 2 updates |
+| `/my-library` (status, seat, shift, days left, attendance history, study hours, dues, receipts) | 4 |
+| `/receipt/[id]` printable | 3 (librarian), 4 (student) |
+
+### 6.2 Librarian
+
+**`/librarian/students`: tabbed (D13), with a count on every tab and search, shift and section filters.** 🆕 No New Requests tab: there is no approval step.
+
+| Tab | Columns | Actions |
+|---|---|---|
+| Demo Students | 🆕 Source badge (QR / Manual), "New today" highlight, photo, name, phone, shift, demo seat, start, end, **days-left badge** (green ≥ 2, yellow 1, red today/expired), attendance count | **Collect fee & activate**, Extend (1–3 days), End demo, View |
+| All Students / Active Members | Photo, name, phone, seat, shift, plan, expiry, days left, dues, today's attendance | Renew, Change seat, Collect payment, Block, View |
+| Demo Ended / Follow-up | Name, phone, demo period, last attendance, seat (released) | Activate, Archive, View |
+| Expired Members | Name, phone, expired on, previous plan, dues | Renew, Block, View |
+| Pending Payments | Name, fee, paid, due, history | Collect payment, View receipts |
+
+Badge thresholds follow the spec: green while 2+ days remain, yellow when 1 day remains, red on the last day or after. With the default demo (start + 3 days, D8), green shows on the first two days, yellow on the third, red on the last.
+
+**🆕 Add Demo Student page `/librarian/students/add-demo` (Phase 2)**
+
+Same card layout as the existing Add Student form, mobile-friendly.
+
+| Section | Contents |
+|---|---|
+| Student | Full name*, Mobile*, Photo (take or upload, with preview), Email, Address |
+| Demo | Shift*, Start date* (today by default; the date picker blocks past days), End date* (start + `demoDays` by default, editable; shows "4 days of demo"), Seat* |
+| More details (collapsible) | Exam target, College, Parent contact, Notes, ID proof (image or PDF, marked "private") |
+
+- **Seat\* behaviour:** a grid showing **only seats free for the chosen shift and dates**. It reloads when the shift or dates change; taken seats are hidden, and a "Show taken" toggle reveals why each is taken.
+- **Inline validation:** R15 messages appear under each field; server errors map back onto the same field.
+- **On success:** the toast "Demo started for {name}" appears and the page goes to **Students → Demo Students** with the new row highlighted. Buttons: "Add another" and "Go to Demo Students".
+
+**🆕 Attendance page changes (Phase 2)**
+- Every "Not checked in" row gets **Present · Absent · Check in** buttons; inside rows get **Check out**.
+- A "Mark all remaining present" button with a confirmation, for roll call.
+- Demo students carry a "Demo" badge.
+- When `otpEnabled = false`, the page subtitle reads "Manual attendance".
+
+**🆕 Settings → Library & check-in (Phase 1.1)**
+- A "QR check-in with OTP" switch (off by default) with a short explanation.
+- The SMS warning from R13.
+
+**Membership activation modal (Phase 3), sections:**
+1. Student and current demo seat.
+2. Plan: Monthly / Quarterly / Yearly / Custom dates. Fee auto-filled and editable.
+3. Payment: method, total, paid, due (live).
+4. Seat: "Keep demo seat" or pick from the availability grid for the shift and dates (conflicts greyed out).
+
+On success: toast "Membership activated successfully.", a receipt link, and refetched lists.
+
+**Other librarian pages:**
+
+| Page | Content |
+|---|---|
+| **Student detail** drawer | Profile, status timeline, memberships, payments + receipts, seat history, attendance summary |
+| **Seats** `/librarian/seats` (Phase 3) | Shift selector + date. R12 colours. Section tabs. Seat drawer with history, assign/change/release. Sections manager. |
+| **Plans & Payments** `/librarian/membership` (D14, Phase 3) | Plans CRUD, Pending Payments, recent receipts, expiry reminders (existing) |
+| **Reports** `/librarian/reports` (Phase 4) | Type, range, shift; table preview; CSV; Print |
+| **Dashboard** | Today's attendance (✅). New: 🆕 **New demos today** (with source), Demo ending today, Pending dues totals. |
+| **Sidebar** | "Students" gets a badge counting 🆕 demos started today. Plans & Payments; Reports. |
+
+### 6.3 Admin (Phase 4)
+
+`/admin/libraries` (list, create, suspend), `/admin/libraries/[id]`, `/admin/reports`, `/admin/audit-logs`.
+
+**All screens:** loading skeleton, empty state, error with retry, success toasts, labelled inputs, 44 px touch targets on student pages.
 
 ---
 
-## 11. Implementation order (four phases)
+## 7. Role permissions
 
-Each phase ends with typecheck, build, unit tests, an end-to-end run on a throwaway DB, and a **testing checklist for approval before the next phase starts**.
+| Capability | Admin | Librarian (own library) | Student (own record, one library) |
+|---|---|---|---|
+| Libraries, librarians, platform plans, revenue, all audit logs | ✅ | ✗ | ✗ |
+| Library stats (read) | All libraries | Own | ✗ |
+| Shifts, sections, seats, plans, settings, QR | Read via library detail | ✅ | ✗ |
+| Start demo (manual), demo extend/end, activate, renew, block, archive | ✗ | ✅ | 🆕 Start own demo via QR (once per phone) |
+| Payments, receipts | Read | ✅ | Own receipts |
+| Attendance overrides, reports | ✗ | ✅ | ✗ |
+| Fill the demo form, check in/out, My Library | ✗ | ✗ | ✅ |
 
-### Phase 1: Tenant migration, library QR, OTP check-in, attendance
+**Enforcement:**
+- Guards: `requireAdmin`, `requireLibraryContext`, student session.
+- The session's `libraryId` must match the QR slug's library.
+- `libraryId` is never read from request bodies.
+- Every query filters by `libraryId`.
+- Regression tests call each librarian endpoint with another library's IDs and expect 404.
 
-**Tenant**
-- `Library` model update, `User.libraryId`.
-- `ensureLibraryForUser`: creates the library and backfills `libraryId` on that librarian's existing docs the first time.
-- `requireLibraryContext`, `libraryId` on new writes (students, seats, books, transactions).
-- `scripts/migrate-libraries.mjs` (dry-run / `--apply`), duplicate-phone report, indexes.
+---
 
-**Students**
-- `status` (`ACTIVE_MEMBER` / `EXPIRED` / `BLOCKED`), E.164 phone, `shiftId`.
-- The existing add/edit flows keep `status` in sync with the membership dates.
+## 8. Edge cases
 
-**Shifts**
-- Model, API and `/librarian/shifts` page. A default "Full Day" shift is created per library.
+| Case | Handling |
+|---|---|
+| **Duplicate phone** | Unique per library (API + index). QR registration with an existing phone shows that student's current state instead of creating a new one. Legacy duplicates are reported by the migration script, never auto-merged. Same email rule (one per library). |
+| **Expired demo** | R4 lazily on scan and list reads + cron. Scan shows the R5 screen. The seat is released. |
+| **Expired membership** | Same: EXPIRED, seat released, renewal screen, history kept. Renewal starts at today or the old end date, whichever is later. |
+| **Seat conflict** | R3 check under a per-seat lock. The second request gets 409 with the conflicting student and shift. The availability grid hides conflicts. A seat picked in the QR form may be taken by the time it's submitted → "That seat was just taken, pick another" (the grid refreshes). |
+| **Missed check-out** | Auto at shift end + 30 min (`checkOutAt = shift end`, flagged `autoCheckedOut`). |
+| **Late check-in** | R2; "Late by 1 hour 30 min" formatting. A late arrival after the cron already wrote ABSENT turns the ABSENT row into a LATE check-in. |
+| **Multiple scans** | Unique index + R1 + 2-minute repeat guard. A third scan reads only. |
+| **OTP failure** | Provider error → code cleared, cooldown reset, "try again". Config missing → 503 before any code is created. Limits: 60 s resend, 5/hour/phone, **10/day/phone (1.1)**, 500/day/library, IP limit. 5 wrong attempts → new code required. |
+| **Wrong library QR** | Bad or old signature → "This QR code is not valid any more…". A session from library A is never accepted by library B (per-library cookie + server check). |
+| **Blocked student** | Access denied on scan. No seat assignment, activation or renewal until unblocked. Unblock restores the status derived from dates. |
+| 🆕 **QR demo misuse** | Without approval, anyone with a working phone can start a demo. Protections: OTP-verified number; one demo per phone per library ever; the optional location check (D3) so it only works inside the library; the librarian sees "New demos today" and can **End demo** or **Block** in one tap, which frees the seat at once. |
+| 🆕 **QR off** | `/checkin` links and old printed QRs show the desk message; no OTP is generated or charged. Manual admission and attendance are unaffected. Turning QR on later restores everything without reprinting. |
+| 🆕 **Demo seat race** | Two librarians pick the same seat at once → the seat lock lets one through; the other gets "Seat {n} was just taken". |
+| 🆕 **Manual attendance outside the period** | Marking a demo student for a day after `demoEndDate` → 409 "{name}'s demo ended on {date}." Same for an expired membership. |
+| 🆕 **Absent over a real check-in** | Refused unless forced with a note, so roll call doesn't wipe a real QR record by accident. |
+| 🆕 **ID proof** | Never a public URL. Signed 5-minute link for the librarian only. |
+| **Other** | Night shifts across midnight · Full Day vs Morning seat sharing · shift deactivated with students on it (409) · deleting a seat with assignments (409) · double-submitted activation (`requestId` replay) · partial payment then expiry (dues stay in Pending Payments) · demo extension cap · re-registration after rejection (24 h) · photo upload unavailable (registration proceeds without a photo) · librarian's own plan lapsed (D4) · library suspended. |
 
-**Library settings**
-- Timezone, grace minutes (R2), early check-in minutes, optional geofence (D3).
+---
 
-**Library QR**
-- Signed URL, `/librarian/library-qr` (view / download PNG / print / regenerate).
+## 9. Testing approach (every phase)
 
-**Student OTP**
-- `StudentOtp` (hashed, 5-minute expiry, 5 attempts, send limits), `OtpChannel` (console in dev, MSG91), 30-day per-library student session.
+- **Unit tests (Vitest):** pure rules. Time, lateness, R3 overlap, R4/R10 demo dates (D8), payment arithmetic, phone, OTP.
+- **End-to-end:** the Node script against a **throwaway local Mongo** and a production build. The real database is never touched. The suite grows per phase.
+- **Visual:** headless screenshots at 390 px and 1280 px.
+- **Gates:** `npm run typecheck`, `npm run lint` (after D12), `npm test`, `npm run build`, the e2e script.
 
-**Check-in**
-- `/checkin/[slug]` mobile flow and the scan state machine (R1, R5).
-- Statuses not created until Phase 2 (`PENDING`, `DEMO`, unknown phone) show a holding message: "Not registered — ask the librarian".
+---
 
-**Attendance**
-- Model and service (R1, R2), lazy auto check-out.
-- `/librarian/attendance`: date and shift filters; Present / Late (late by X) / Not checked in / Inside tabs; manual check-in / check-out / status / note.
-- Today's attendance card on the dashboard.
+## 10. Implementation phases
 
-**Audit and tests**
-- `AuditLog`, with librarian login and manual overrides (R8).
-- Vitest unit tests (time, phone, attendance rules, OTP, QR signature), e2e script, screenshots.
+### Phase 1: tenant migration, QR, OTP check-in, attendance — ✅ DONE
 
-**Phase 1 — delivered, with these deviations from the plan above:**
-- The unique `{libraryId, phone}` index is **not** declared on the schema. `scripts/migrate-libraries.ts` builds it only once duplicates are resolved. Declaring it made every server start fail to build it and broke the backfill of duplicate rows (found by the e2e test). The API still blocks new duplicates.
-- **Repeat-scan guard:** a scan within 2 minutes of check-in returns "already checked in" instead of checking out, so a page refresh or double tap can't end a session.
-- **Library creation is lazy:** each librarian's library is created on their first login or API call, with backfill. Running the migration script is still recommended, to tag every record and build the indexes.
-- **E2E test is Node, not bash** (`scripts/e2e-phase1.mjs`). macOS bash 3.2 mis-parses the quoted JSON bodies.
-- The QR link uses `NEXT_PUBLIC_APP_URL` when it is set, and the request origin otherwise.
+Delivered as described in §1.1 and verified.
 
-### Phase 2: Registration, librarian approval, 3-day demo
-- Register API and form (photo, shift, section/seat preference).
-- `PENDING` student, `/librarian/requests` with approve/reject (audited).
-- Demo creation (`demoDays` setting, default 3).
-- DEMO scans with `entryType = DEMO`; demo expiry enforced at scan time.
-- Email becomes optional on students.
+**Deviations already recorded:**
+- The unique phone/email indexes are built by the migration only once the data is clean.
+- 2-minute repeat-scan guard.
+- Lazy library creation.
+- Node e2e script.
+- The QR link uses the address the librarian has open (and adds a missing `http(s)://`).
 
-### Phase 3: Membership conversion, seat assignment, seat map
-- `Section`, `SeatAssignment` (R3 conflict rule, seat lock), seat-service refactor.
-- Colour-coded live seat map.
-- `MembershipPlan`, `Membership`, `Payment` (R6), convert/renew with dues.
-- Notifications: seat assignment and receipt emails; audit logs for membership, seat and payment events.
+**Phase 1 testing checklist** (already provided; still valid):
 
-### Phase 4: Reports, admin panel, cron jobs, receipts
-- Cron endpoint (R1 auto check-out, absent marking, R4 demo/membership expiry, seat release; `ShiftRun` idempotency).
-- Reports: daily, monthly, shift, occupancy, **Seat Utilisation (R7)**, fees, expiring, absent; CSV and print.
-- Printable receipts, `/my-library`.
-- Admin: libraries (create / suspend, audited), librarian assignment, platform revenue (`PlatformPayment`), audit-log viewer, library stats.
-- Expiry reminder notification.
+- [ ] Library settings: grace 15; timezone.
+- [ ] Shifts: CRUD, Night "ends next day", duplicate name refused.
+- [ ] Library QR: download, print, copy, regenerate (old QR invalid).
+- [ ] OTP: wrong code counts attempts, 60 s resend, lockout after 5, test mode shows the code.
+- [ ] Scans: check-in → Present / "Late by …" → repeat within 2 min = already in → check-out with study time → "already checked out today".
+- [ ] Expired → renewal screen, no attendance. Blocked → denied. Unknown phone → not registered.
+- [ ] Attendance page: counts, tabs, manual in/out, override, note; auto check-out after end + 30.
+- [ ] Seats: bulk add, assign/move/release, taken seat refused, Free expired seats.
+- [ ] Isolation: a second librarian sees none of the first library's data.
 
-## 12. Known limitations and next steps
+### Phase 1.1: gaps against the new spec + 🆕 QR switch (small; done first after approval, then stop for QA)
 
-- **SMS:** real OTP delivery needs an MSG91 account and DLT template approval (D1). Until then, OTP works in dev via the console only.
-- **Remote check-in:** a static QR can still be used remotely unless the geofence is enabled (D3). A rotating QR on a door screen is the stronger next step.
-- **Rate limiting:** the in-memory limiter is per instance. OTP limits are also enforced in the DB, but general API rate limits should move to Redis (Upstash) for multi-instance deploys (already noted in the README).
-- **Payments:** online payments (Razorpay/UPI collect) are out of scope; payments are recorded manually.
-- **One library per librarian:** multi-staff per library is enabled by `User.libraryId`, but staff roles and permissions inside a library are not built.
-- **Student identity:** the student "login" is the OTP session only; no password accounts, as the spec asks.
+- 🆕 **`settings.otpEnabled`** (default false, D15): the R13 gate on every `/api/checkin/*` route, the Settings switch with the SMS warning, the "QR is off" state on the Library QR page and the check-in page, the sidebar "Off" badge, migration step 1.1, and an audit entry.
+- **Per-phone daily OTP limit:** 10 sends/day, alongside the existing 5/hour.
+- **ESLint (D12):** install and configure; fix errors in new/changed files; report legacy warnings.
+
+**1.1 checklist:**
+- [ ] A new library has QR check-in **off**. Opening its `/checkin` link shows "please check in at the desk". OTP send returns `QR_DISABLED`, and no SMS is sent.
+- [ ] The Library QR page shows "QR check-in is off" with download and print disabled. The sidebar shows "Off".
+- [ ] Turning the switch on in Settings makes the same QR work again with no reprint. Turning it on with no SMS provider shows the warning.
+- [ ] The toggle appears in the audit log.
+- [ ] 11th OTP request in a day for one phone is refused with a clear message.
+- [ ] `npm run lint` runs without errors.
+
+### Phase 2: manual demo admission, manual attendance, QR demo form, 3-day demo
+
+🆕 **Built in this order: manual path first, QR path second.**
+1. `SeatAssignment` + R3 (moved here from Phase 3) + migration step 2 + the availability API.
+2. The **Add Demo Student** form and API (R15), the `Student` fields (incl. the `address` fix), private ID-proof upload.
+3. **Manual attendance:** Present/Absent/Check in/Check out (R14), the attendance-page buttons, "mark all remaining present".
+4. The Students page tabs (Demo Students first), extend / end demo, R4 lazy sweep, archive.
+5. 🆕 The QR demo form: an unregistered number → form → DEMO + seat hold + immediate check-in (only when `otpEnabled`).
+
+**Delivers:** §5.2 APIs and the demo form. The Students page becomes tabbed with **Demo Students, Demo Ended**; the existing list becomes **All Students** (ACTIVE_MEMBER) and **Expired**. Also:
+- extend / end demo
+- archive
+- DEMO scans with `entryType = DEMO`
+- the R4 lazy sweep
+- days-left badges
+- the "New demos today" sidebar badge and dashboard card
+- audit for demo start (QR/manual), extend and end
+
+**Phase 2 testing checklist (🆕 manual path):**
+- [ ] With QR **off**, add a demo student with every required field. They appear at once in **Demo Students** with `registrationSource = MANUAL`, status DEMO, the chosen seat on **DEMO_HOLD**, and default end date = start + 3 days.
+- [ ] Each required field left empty shows its own message; the form keeps the other values.
+- [ ] Phone `98765 43210` and `+91 9876543210` are treated as the same number. The second student → "This mobile number is already registered to …".
+- [ ] Past start date → refused. End before start → refused. A 31-day demo → refused. Editing the end date to start + 5 → accepted.
+- [ ] The seat grid lists only seats free for the shift and dates. Choosing a seat held by an Evening student while adding a Morning demo → allowed. Choosing a seat booked **Full Day** → "booked … for the Full Day shift" message.
+- [ ] Two browser tabs submitting the same seat at once → one succeeds, the other gets "was just taken".
+- [ ] Photo and ID proof upload. The ID proof opens only through the librarian's link, and the link stops working after 5 minutes. With Cloudinary unset, the student is still created, with a warning.
+- [ ] Address is saved (bug fixed) for both forms.
+- [ ] Manual attendance: Present (no study hours counted), Absent, Check in (Late computed), Check out (study time); `source = MANUAL`; `entryType` DEMO for demo students, MEMBER for members; each appears in the audit log.
+- [ ] Marking a demo student for a day after the demo end → refused with the end date. A future date → refused. Absent over a QR check-in → needs a confirmation and a note.
+- [ ] "Mark all remaining present" marks only the not-checked-in active/demo students of the chosen shift.
+
+**Phase 2 testing checklist (QR path, `otpEnabled` on):**
+- [ ] Unregistered number: scan → OTP → **demo form** appears (not "Not registered").
+- [ ] Fill in name, photo, shift and a free seat → "Your 3-day demo has started!". During a shift the student is **checked in immediately** with `entryType = DEMO`.
+- [ ] The student appears at once in **Demo Students** with a "QR" badge and "New today"; the seat shows Demo Hold; the dashboard counts the new demo.
+- [ ] A seat taken by someone else between loading and submitting → "That seat was just taken"; the grid refreshes.
+- [ ] No free seat for the shift → the demo starts without a seat; the librarian can assign one later.
+- [ ] Registered number scans → normal check-in/out (no form).
+- [ ] A number whose demo has ended scans → renewal screen; the form is **never** shown again.
+- [ ] Two phones submitting the form for the same number at once → exactly one student is created.
+- [ ] Badge colours: green with 2+ days left, yellow with 1, red on the last day or after.
+- [ ] Extend +2 → the end date moves; over the 7-day cap refused.
+- [ ] End demo → moves to Demo Ended; seat freed; scan shows the R5 screen.
+- [ ] Demo end date passed (time-travel in the test DB) → opening any list or scanning moves the student to Demo Ended.
+- [ ] Archive from Demo Ended → hidden; history kept.
+- [ ] With the QR switch **off**: the same steps are done by the librarian (Add Demo Student, manual check-in), with identical results in the lists.
+- [ ] Isolation: library B can't see or end library A's demos.
+
+### 🆕5 Phase 2.5: admin-controlled QR/OTP access (spec §12)
+
+Built in four steps; the details are in §12.
+
+**Status (2026-10-16): built.** Typecheck clean, 38/38 unit tests, build OK, e2e 202/202 (incl. gating, credits, refunds, monthly limit, race, OTP-off, expiry, isolation, audit). The checkboxes below are for your manual pass. The old 1.1 "switch in Settings" items are superseded by this phase.
+
+| Step | Contents |
+|---|---|
+| **2.5a Backend** | Library fields; `SmsTransaction` model; migration step; `assertQrOtpAccess`; credit charge/refund in OTP send; monthly reset; gating every QR route; librarian settings API stops accepting the switch |
+| **2.5b Admin** | `/admin/qr-access` list + detail drawer, the APIs, audit, notifications |
+| **2.5c Librarian** | "QR Attendance" page (enabled vs. locked), read-only status in Settings, sidebar rename |
+| **2.5d Student + tests** | Exact unavailable texts on the check-in page; e2e for gating, credits, limits, refunds, isolation, audit |
+
+**Phase 2.5 testing checklist:**
+- [ ] A new library: the librarian sees **QR Attendance → "Contact admin to enable QR attendance."** Manual attendance and Add Demo Student work. Settings has **no switch**, only "Managed by admin".
+- [ ] A librarian calling the access API directly → **403**. Sending `otpEnabled` through `/api/library` does nothing.
+- [ ] A student scanning a disabled library sees **"QR check-in is currently unavailable. Please contact library staff."**; the browser makes **no** OTP request; nothing is recorded.
+- [ ] Admin enables QR + OTP with a note → the librarian page shows the QR and usage. Audit shows `qr_access.updated` with before/after.
+- [ ] 0 credits → OTP send **402** "SMS credits are over…". Admin adds 50 credits with a note → the ledger shows +50 and balance 50; audit `qr_access.credits_added`.
+- [ ] Each real OTP send: balance −1, `otpUsedThisMonth` +1, one `OTP_SEND` row with masked phone and balance after. Verify: a row with 0 credits (D19).
+- [ ] Provider failure → the credit comes back (`REFUND` row); the balance is unchanged overall.
+- [ ] Monthly limit 3 → the 4th send **429**; the next month (time-travel the month key) the counter resets.
+- [ ] Two sends racing with 1 credit left → exactly one succeeds and the balance never goes below 0.
+- [ ] QR on, OTP off → an already-verified phone still checks in; a new phone gets "Phone verification is currently unavailable…"; no credit is used.
+- [ ] Access SUSPENDED or EXPIRED (incl. `accessExpiresAt` in the past) → every QR route 403; the student message as above.
+- [ ] Disabling access deletes nothing: attendance, students and sessions remain, and re-enabling works without reprinting the QR.
+- [ ] Isolation: library B's librarian can't see A's usage or ledger; only admins see all libraries.
+- [ ] Credits low (≤ 10 % of the last top-up or ≤ 10) → the librarian and admin get a notification once.
+
+### Phase 3: membership, payments, seats, automatic list movement
+
+**Delivers:**
+- Sections, shift-wise seat map (R12), seat history (`SeatAssignment` itself arrives in Phase 2 🆕).
+- Migration step 3.
+- MembershipPlans, the **activation modal** (R11), renew, collect payment, **Pending Payments**, printable receipts.
+- Plans & Payments page.
+- Notifications: seat assignment, receipt email.
+- Audit for membership, payment and seat events.
+
+**Phase 3 testing checklist:**
+- [ ] 🆕 Activating a **manually admitted** demo student: the same `SeatAssignment` document goes from `DEMO_HOLD` to `ACTIVE` (no new seat record). Payment and membership are created; status becomes ACTIVE_MEMBER. The student leaves Demo Students, appears in All Students, and the receipt prints.
+- [ ] Plans CRUD; plan price auto-fills the activation modal.
+- [ ] Activate from Demo: full payment → PAID receipt. Student leaves Demo, appears in All Students immediately; toast shown.
+- [ ] Partial payment → PARTIAL; appears in Pending Payments with fee/paid/due. Collect the rest → PAID; leaves Pending Payments.
+- [ ] Overpayment refused. A double click on Activate creates exactly one payment (`requestId`).
+- [ ] Keep demo seat → the DEMO_HOLD becomes ASSIGNED. Pick another seat → old hold released.
+- [ ] R3: Morning + Evening share a seat ✓. Full Day vs Morning ✗ (409 names the holder). Same shift with overlapping dates ✗.
+- [ ] Seat map per shift shows Available / Requested / Demo hold / Assigned / Occupied / Expired in the right colours; seat history lists past holders.
+- [ ] Activated student's next scan → `entryType = MEMBER`.
+- [ ] Receipt page prints cleanly; receipt numbers are sequential per library and unique.
+- [ ] Renew an expired member → back in All Students; dates continue correctly.
+- [ ] Migration step 3 on a copy: memberships and assignments created, amounts not invented, re-run safe.
+- [ ] Isolation for plans, payments, receipts and assignments.
+
+### Phase 4: cron, reports, receipts for students, admin
+
+**Delivers:** §5.4. ShiftRun ABSENT marking; R4 via cron; expiry reminders; reports + CSV + print (incl. R7); `/my-library`; admin libraries, suspend, librarian assignment, revenue, audit viewer.
+
+**Phase 4 testing checklist:**
+- [ ] Cron without the secret → 401. With it → per-library counts. Running twice changes nothing more.
+- [ ] After shift end, students who didn't come show ABSENT. A late arrival afterwards becomes LATE.
+- [ ] Open record past end + 30 → auto checked out by the cron.
+- [ ] Demo/membership expiry and seat release happen without anyone opening a page.
+- [ ] Every report matches hand-counted test data; CSV opens in Excel; print layout is clean.
+- [ ] Seat Utilisation shows present/absent days, study hours, last visit.
+- [ ] My Library on a phone: seat, shift, days left, history, hours, dues, receipts.
+- [ ] Admin: create library + librarian (the librarian logs in and sees only their library), suspend (check-in unavailable, librarian blocked), revenue, audit filter.
+
+**At the end of every phase I report:** files created/modified, database changes, API list, UI pages, the manual testing checklist, known limitations, and the next phase summary.
+
+---
+
+## 12. 🆕5 Admin-controlled QR/OTP access per library
+
+### 12.1 Model changes
+
+**`Library`** gets top-level fields, separate from `settings`, because librarians must not be able to edit them through the settings API:
+
+| Field | Type / default | Meaning |
+|---|---|---|
+| `qrAttendanceEnabled` | Boolean, **false** | Library QR check-in allowed |
+| `otpEnabled` | Boolean, **false** | New phones can verify by OTP (D20) |
+| `smsCreditBalance` | Int ≥ 0, **0** | Prepaid SMS credits (1 credit = 1 OTP SMS) |
+| `monthlyOtpLimit` | Int ≥ 1 or **null** (no limit) | Max OTP sends per calendar month (D24) |
+| `otpUsedThisMonth` | Int, 0 | OTP sends this month |
+| `otpUsageMonth` | String `YYYY-MM` | Month the counter belongs to; reset when it changes |
+| `accessStatus` | `ACTIVE` \| `SUSPENDED` \| `EXPIRED`, **ACTIVE** | Admin state for QR/OTP only. The existing `Library.status` (whole library) is unchanged and still wins. |
+| `accessExpiresAt` | Date \| null | Optional; once passed → EXPIRED (D23) |
+| `accessNote` | String ≤ 300 | Last reason given by the admin (shown to the librarian) |
+| `accessUpdatedAt` / `accessUpdatedBy` | Date / User ref | Last admin change |
+| `creditsLowNotifiedAt` | Date \| null | So the "credits low" notice is sent once per top-up |
+
+The old `settings.otpEnabled` (revisions 3–4) is **deprecated**. The migration copies it (D22), and after that nothing reads it.
+
+**New `SmsTransaction`** (append-only ledger, never edited or deleted):
+
+| Field | Notes |
+|---|---|
+| `libraryId` | required, indexed |
+| `type` | `CREDIT_ADD` \| `CREDIT_ADJUST` \| `OTP_SEND` \| `OTP_VERIFY` \| `REFUND` |
+| `credits` | +N for top-ups and refunds, −1 for a send, 0 for verify and test-mode sends |
+| `balanceAfter` | Balance right after this row |
+| `monthKey` | `YYYY-MM` |
+| `phoneMasked` | `+91 ••••• •3210` (never the full number) |
+| `provider` | `msg91` / `fast2sms` / … / `console` |
+| `status` | `OK` \| `FAILED` |
+| `refundOf` | Original send's id (for REFUND) |
+| `actorId`, `actorRole` | Admin for credits; `student` / `system` for sends |
+| `note` | Admin's reason for top-ups and adjustments |
+| `createdAt` | |
+
+Indexes: `{libraryId, createdAt:-1}`, `{libraryId, monthKey, type}`.
+
+### 12.2 `assertQrOtpAccess(libraryId, { otp?, charge? })`
+
+One server function (in `lib/services/qr-access.ts`), called **first** by every QR/OTP route:
+
+1. Load the library.
+2. If `status = SUSPENDED` (whole library) → 403 `LIBRARY_UNAVAILABLE`.
+3. If `accessExpiresAt` has passed and the status is ACTIVE → set EXPIRED (audited as `system`).
+4. If `accessStatus ≠ ACTIVE` or `!qrAttendanceEnabled` → **403 `QR_DISABLED`**.
+5. If `otp` and `!otpEnabled` → **403 `OTP_DISABLED`**.
+6. If `charge` (OTP send only), skipped for the console/test channel (D21):
+   - **Month rollover:** if `otpUsageMonth ≠ current month`, atomically reset `otpUsedThisMonth = 0`.
+   - **Atomic reservation, in one `findOneAndUpdate`:** `{_id, smsCreditBalance ≥ 1, (monthlyOtpLimit = null OR otpUsedThisMonth < monthlyOtpLimit)}` → `$inc {smsCreditBalance: −1, otpUsedThisMonth: +1}`. Under concurrency, the balance can never go negative and the limit can never be exceeded.
+   - **If nothing matched:** re-read to tell which rule failed → **402 `SMS_CREDITS_EXHAUSTED`** or **429 `MONTHLY_OTP_LIMIT`**.
+   - **On success:** write an `OTP_SEND` row with `balanceAfter`.
+7. **If the SMS provider then fails:** `$inc` the credit back and the monthly counter back, and write a `REFUND` row. The existing "code cleared, retry allowed" behaviour stays.
+8. **Credits low:** when `balanceAfter ≤ max(10, 10 % of last top-up)` and not yet notified → notify the librarian (section `account`) and the admins (section `librarians`), and set `creditsLowNotifiedAt`.
+
+| Route | `otp` | `charge` |
+|---|---|---|
+| GET `/api/checkin/[slug]` | – (**never 403**: returns `{qrEnabled, otpEnabled, reason}` so the page can show the right message without calling OTP APIs) | – |
+| POST `/otp/send` | ✓ | ✓ |
+| POST `/otp/verify` | ✓ | ✗ (ledger row, 0 credits, D19) |
+| POST `/scan`, GET `/options`, POST `/register` | ✗ | ✗ |
+| Manual attendance, Add Demo Student, everything librarian | **not gated** | – |
+
+### 12.3 APIs
+
+| Method | Route | Role | Request | Response | Errors |
+|---|---|---|---|---|---|
+| GET | `/api/admin/qr-access?search&status&page` | Admin | – | Libraries: name, owner, QR/OTP flags, accessStatus, credits, used/limit this month, last change | 403 non-admin |
+| GET | `/api/admin/qr-access/[libraryId]` | Admin | – | Library access fields + last 50 ledger rows + last 20 related audit entries + this month's sends/verifies/refunds | 404 |
+| PATCH | `/api/admin/qr-access/[libraryId]` | Admin | `{qrAttendanceEnabled?, otpEnabled?, accessStatus?, accessExpiresAt?, monthlyOtpLimit? (int ≥ 1 or null), note* (3–300)}` | Updated access | 400: note missing; limit not a positive whole number; OTP on while QR off ("Turn on QR attendance first"). 404. Audited `qr_access.updated` with before/after; librarian notified |
+| POST | `/api/admin/qr-access/[libraryId]/credits` | Admin | `{credits (int, ±, ≠ 0, \|n\| ≤ 100000), note*, requestId}` | New balance + ledger row | 400 would go below 0 / no note; 200 replay of the same `requestId`. Audited `qr_access.credits_added` / `qr_access.credits_adjusted` |
+| GET | `/api/admin/qr-access/[libraryId]/transactions?page&type` | Admin | – | Paged ledger | 404 |
+| GET | `/api/library/qr-access` | Librarian | – | Own flags, status, note, credits, used/limit, last 20 ledger rows (masked) | – |
+| PATCH | `/api/library` (changed) | Librarian | `settings.otpEnabled` **removed from the schema**; the access fields are not accepted | – | Unknown fields are ignored (zod strip) |
+
+### 12.4 UI
+
+**Admin: `/admin/qr-access` ("QR/OTP Access", new sidebar item)**
+- **List:**
+  - A table on desktop, cards on phones.
+  - Columns: Library, Owner, QR, OTP, Status badge, Credits (red at 0, amber when low), Used this month / limit.
+  - Search and a status filter.
+- **Row drawer:**
+  - Switches: QR attendance and OTP (OTP is disabled while QR is off).
+  - Access status: Active / Suspended / Expired, plus an optional expiry date.
+  - Monthly limit: number or "No limit".
+  - **Reason / note** (required to save).
+  - **Add credits**: amount, presets +50 / +100 / +500 / +1000, note. A negative amount is an adjustment.
+  - **Usage**: sends / verifies / refunds this month.
+  - **History**: tabs for Credits & OTP (ledger) and Changes (audit).
+- Every save shows a toast; the history reloads.
+
+**Librarian: `/librarian/qr-attendance` ("QR Attendance")**
+- Replaces "Library QR"; the old route redirects.
+- **Enabled:** the existing QR card (view, download, print, regenerate) plus a usage card: credits left, used this month / limit, the admin's note, and the last 20 OTP rows with masked phones.
+- **Disabled, suspended or expired:**
+  - A lock card: **"Contact admin to enable QR attendance."**, plus the admin's note and status when present.
+  - The QR is hidden (not just faded), so a disabled library can't print one.
+  - Buttons: "Take attendance manually" → Attendance; "Add Demo Student".
+- **Settings:** the "QR check-in with OTP" switch is replaced by a read-only line: "QR attendance: Enabled / Off — managed by the platform admin."
+- **Attendance page:** unchanged. Manual Present / Absent / Check in / Check out always work.
+
+**Student `/checkin/[slug]`**
+- GET says QR is off, suspended or expired → **"QR check-in is currently unavailable. Please contact library staff."** No OTP request is made and nothing is recorded.
+- QR on, OTP off, no session on this phone → "Phone verification is currently unavailable. Please contact library staff."
+- 402 on send → "SMS service is temporarily unavailable at this library. Please contact library staff." Credits aren't mentioned to students.
+- 429 monthly limit → the same student-facing text. The librarian and admin see the real reason in their notifications.
+
+### 12.5 Permissions
+
+| Action | Admin | Librarian | Student |
+|---|---|---|---|
+| Enable/disable QR, OTP; status; expiry; limits | ✅ | ✗ (403) | ✗ |
+| Add / adjust credits | ✅ | ✗ | ✗ |
+| View every library's usage and ledger | ✅ | ✗ | ✗ |
+| View own library's access, usage, ledger (masked) | – | ✅ | ✗ |
+| Use QR check-in / OTP | – | – | Only when allowed by §12.2 |
+| Manual attendance, manual demo admission | – | ✅ always | – |
+
+Guards: `requireAdmin` on `/api/admin/qr-access/*`; `requireLibraryContext` on `/api/library/qr-access`; `assertQrOtpAccess` on the public QR routes.
+
+### 12.6 Edge cases
+
+| Case | Handling |
+|---|---|
+| Admin disables while a student is mid-flow | The next call (verify/scan/register) returns 403. A code already sent stays valid only if access comes back within its 5 minutes. |
+| Disabling access | **Deletes nothing.** Attendance, students, OTP records and student sessions remain; re-enabling works with the same QR. |
+| Credits run out between check and send | Impossible: the reservation is atomic. A provider failure refunds. |
+| Concurrent top-ups | `$inc` is atomic; each top-up writes its own ledger row with the correct `balanceAfter`. A replayed `requestId` adds nothing. |
+| Negative adjustment below 0 | 400 "Balance can't go below 0". |
+| Limit lowered below this month's usage | Allowed; further sends get 429 until next month. |
+| Month rollover in the middle of traffic | The reset is conditional on `otpUsageMonth`, so it happens exactly once. |
+| Whole library SUSPENDED (`Library.status`) | Wins over QR access: everything is unavailable, as today. |
+| Test mode (console) | No credits used (D21); still needs QR + OTP enabled. |
+| Librarian tries to flip flags via `/api/library` or by guessing admin routes | Fields stripped / 403. Admin routes are never reachable by librarians. |
+| Ledger privacy | Phones stored masked only; library B never sees A's rows. |
+
+### 12.7 Migration (step 2.5, re-runnable)
+
+For each library without `accessStatus`:
+- set `accessStatus = ACTIVE`;
+- copy `settings.otpEnabled` into **both** `qrAttendanceEnabled` and `otpEnabled` (D22);
+- set `smsCreditBalance = 0`, `monthlyOtpLimit = null`, `otpUsedThisMonth = 0`, `otpUsageMonth = current month`.
+
+Dry run first, as for every step. Without the migration, Mongoose defaults (both false) mean QR is simply off; nothing breaks.
+
+---
+
+## 11. Known limitations and next steps
+
+- **SMS:** Fast2SMS needs website verification (OTP route) or a ₹100 recharge (`FAST2SMS_ROUTE=q`). Until then, use test mode.
+- **Remote check-in:** a static QR can be used remotely unless the geofence is on; a rotating door-screen QR is a future option.
+- **Rate limiting:** the general API limiter is in-memory (per instance); OTP limits are in the DB. Move to Upstash Redis for multi-instance deploys.
+- **Payments:** no online gateway (manual entry only, by design).
+- **Library staff:** one owner librarian per library; staff roles are not built.
+- **Current repository state:** the work since commit `86c1255` (SMS providers, test mode, seat fixes, email rule, late formatting, phone access in dev) is **not yet committed**.

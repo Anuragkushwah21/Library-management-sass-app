@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { successResponse, handleApiError } from '@/lib/api-response';
 import { attachSession } from '@/lib/middleware/auth';
 import { ensureLibraryForUser } from '@/lib/services/library';
+import { notifyAdmins } from '@/lib/services/notify';
 import {
   getAccessInfo,
   getTrialDays,
@@ -82,6 +83,13 @@ export async function POST(request: NextRequest) {
       await ensureLibraryForUser(String(user._id)).catch((err) =>
         console.error('[VerifyOTP] library setup failed:', err)
       );
+      await notifyAdmins({
+        section: 'librarians',
+        type: 'librarian.signup',
+        title: `New librarian signed up: ${user.name}`,
+        body: `${user.email} — free trial started`,
+        link: '/admin/librarians',
+      });
     }
 
     const access = getAccessInfo(user);

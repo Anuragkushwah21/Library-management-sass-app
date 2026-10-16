@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api } from '@/lib/api';
-import { formatInstant } from '@/lib/time';
+import { formatInstant, formatLate } from '@/lib/time';
 
 /** Dashboard summary of today's QR attendance, with who came in late (PLAN R2). */
 export function TodayAttendanceCard() {
@@ -85,7 +85,7 @@ export function TodayAttendanceCard() {
                       <span className="truncate font-medium">{r.studentId?.name ?? 'Student'}</span>
                       <span className="shrink-0 text-xs text-muted-foreground">
                         in at {formatInstant(r.checkInAt, data.timezone)} ·{' '}
-                        <span className="font-medium text-amber-600">Late by {r.lateMinutes} min</span>
+                        <span className="font-medium text-amber-600">Late by {formatLate(r.lateMinutes)}</span>
                       </span>
                     </li>
                   ))}

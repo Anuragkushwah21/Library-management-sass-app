@@ -15,6 +15,7 @@ import {
   Phone,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
   UserX,
   XCircle,
 } from 'lucide-react';
@@ -23,13 +24,16 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 import { cn } from '@/lib/utils';
-import { formatInstant, formatMinutes, formatTime } from '@/lib/time';
+import { formatInstant, formatLate, formatMinutes, formatTime } from '@/lib/time';
 
 /* ───────────── types ───────────── */
 
 interface Intro {
   library: { name: string; phone: string | null; address: string | null };
   available: boolean;
+  qrEnabled: boolean;
+  otpEnabled: boolean;
+  reason: 'LIBRARY_UNAVAILABLE' | 'QR_DISABLED' | 'OTP_DISABLED' | null;
   timezone: string;
   geofence: boolean;
   session: { phone: string } | null;
@@ -49,11 +53,14 @@ interface ScanResult {
     | 'NO_SHIFTS'
     | 'LIBRARY_UNAVAILABLE'
     | 'OUT_OF_RANGE'
-    | 'LOCATION_REQUIRED';
+    | 'LOCATION_REQUIRED'
+    | 'DEMO_NOT_STARTED'
+    | 'QR_DISABLED'
+    | 'OTP_DISABLED';
   library: { name: string; phone?: string | null };
   student?: { name: string; seatNumber: number | null; status: string };
   shift?: { name: string; startTime: string; endTime: string };
-  membership?: { endDate: string | null; daysLeft: number | null; expiringSoon: boolean };
+  membership?: { endDate: string | null; daysLeft: number | null; expiringSoon: boolean; isDemo?: boolean };
   attendance?: {
     checkInAt: string | null;
     checkOutAt: string | null;
@@ -75,6 +82,8 @@ type Step =
   | { kind: 'otp'; phone: string; devCode?: string }
   | { kind: 'scanning' }
   | { kind: 'result'; result: ScanResult }
+  | { kind: 'register' }
+  | { kind: 'demoStarted'; result: ScanResult; demoDays: number }
   | { kind: 'error'; message: string };
 
 async function post(url: string, body: unknown) {
@@ -132,9 +141,13 @@ export function CheckinFlow() {
       try {
         const location = geofence ? await getLocation() : null;
         const result: ScanResult = await post(`${base}/scan`, { k, location });
-        setStep({ kind: 'result', result });
+        // Number not registered yet → the demo form (PLAN §2.3)
+        setStep(result.outcome === 'NOT_REGISTERED' ? { kind: 'register' } : { kind: 'result', result });
       } catch (err: any) {
         if (err.code === 'SESSION_REQUIRED') return setStep({ kind: 'phone' });
+        if (err.code === 'QR_DISABLED' || err.code === 'LIBRARY_UNAVAILABLE') {
+          return setStep({ kind: 'result', result: { outcome: err.code, library: intro?.library ?? { name: '' } } });
+        }
         setStep({ kind: 'error', message: err.message });
       }
     },
@@ -153,7 +166,12 @@ export function CheckinFlow() {
         }
         const data: Intro = json.data;
         setIntro(data);
-        if (!data.available) {
+        // §12.4: when the admin hasn't enabled QR, never touch the OTP APIs
+        if (!data.qrEnabled) {
+          setStep({ kind: 'result', result: { outcome: 'QR_DISABLED', library: data.library } });
+        } else if (!data.otpEnabled && !data.session) {
+          setStep({ kind: 'result', result: { outcome: 'OTP_DISABLED', library: data.library } });
+        } else if (!data.available) {
           setStep({ kind: 'result', result: { outcome: 'LIBRARY_UNAVAILABLE', library: data.library } });
         } else if (data.session && !scannedOnce.current) {
           scannedOnce.current = true;
@@ -325,11 +343,22 @@ export function CheckinFlow() {
               {resendIn > 0 ? `Resend code in ${resendIn}s` : 'Resend code'}
             </Button>
           </div>
+        ) : step.kind === 'register' ? (
+          <DemoForm
+            base={base}
+            k={k}
+            geofence={Boolean(intro?.geofence)}
+            onDone={(result, demoDays, already) =>
+              setStep(already ? { kind: 'result', result } : { kind: 'demoStarted', result, demoDays })
+            }
+          />
+        ) : step.kind === 'demoStarted' ? (
+          <DemoStarted result={step.result} demoDays={step.demoDays} tz={step.result.timezone ?? tz} />
         ) : (
           <ResultView result={step.result} tz={step.result.timezone ?? tz} onRescan={() => doScan(Boolean(intro?.geofence))} />
         )}
 
-        {intro?.session && step.kind === 'result' && (
+        {intro?.session && (step.kind === 'result' || step.kind === 'register' || step.kind === 'demoStarted') && (
           <button
             type="button"
             onClick={signOut}
@@ -427,7 +456,7 @@ function ResultView({ result: r, tz, onRescan }: { result: ScanResult; tz: strin
               late ? TONES.amber : TONES.green
             )}
           >
-            {late ? `Late by ${r.attendance?.lateMinutes} min` : 'On time — Present'}
+            {late ? `Late by ${formatLate(r.attendance?.lateMinutes ?? 0)}` : 'On time — Present'}
           </div>
           <Rows
             rows={[
@@ -436,7 +465,10 @@ function ResultView({ result: r, tz, onRescan }: { result: ScanResult; tz: strin
               ['Seat', r.student?.seatNumber ?? 'Not assigned'],
               ['Shift', shiftLabel],
               ['Checked in', t(r.attendance?.checkInAt)],
-              ['Membership', daysLeft == null ? 'Active' : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`],
+              [
+                r.membership?.isDemo ? 'Demo' : 'Membership',
+                daysLeft == null ? 'Active' : daysLeft === 0 ? 'Last day' : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`,
+              ],
             ]}
           />
           {r.membership?.expiringSoon && (
@@ -484,9 +516,14 @@ function ResultView({ result: r, tz, onRescan }: { result: ScanResult; tz: strin
         <Panel
           tone="red"
           icon={Hourglass}
-          title="Membership expired"
+          title={r.membership?.isDemo ? 'Your demo has ended' : 'Membership expired'}
           body={
-            r.membership?.endDate ? (
+            r.membership?.isDemo ? (
+              <>
+                Your free demo {r.membership.endDate ? <>ended on <strong className="text-foreground">{date(r.membership.endDate)}</strong></> : 'has ended'}.
+                Take a membership at the desk to keep studying here.
+              </>
+            ) : r.membership?.endDate ? (
               <>
                 Your membership ended on <strong className="text-foreground">{date(r.membership.endDate)}</strong>. Attendance
                 can&apos;t be marked until you renew.
@@ -517,6 +554,27 @@ function ResultView({ result: r, tz, onRescan }: { result: ScanResult; tz: strin
             Scan again
           </Button>
         </Panel>
+      );
+    case 'QR_DISABLED':
+      return (
+        <Panel tone="gray" icon={ShieldCheck} title="QR check-in unavailable" body="QR check-in is currently unavailable. Please contact library staff.">
+          <CallLibrary phone={r.library.phone} />
+        </Panel>
+      );
+    case 'OTP_DISABLED':
+      return (
+        <Panel tone="gray" icon={ShieldCheck} title="Verification unavailable" body="Phone verification is currently unavailable. Please contact library staff.">
+          <CallLibrary phone={r.library.phone} />
+        </Panel>
+      );
+    case 'DEMO_NOT_STARTED':
+      return (
+        <Panel
+          tone="blue"
+          icon={Clock}
+          title="Your demo hasn't started yet"
+          body={r.message ? `It starts on ${date(r.message)}. See you then!` : 'See you on your start date.'}
+        />
       );
     case 'NOT_REGISTERED':
       return (
@@ -558,4 +616,252 @@ function ResultView({ result: r, tz, onRescan }: { result: ScanResult; tz: strin
         </Panel>
       );
   }
+}
+
+/* ───────────── demo form (unregistered number) ───────────── */
+
+interface DemoOptions {
+  shifts: { _id: string; name: string; startTime: string; endTime: string }[];
+  freeSeats: number[];
+  demoDays: number;
+  uploadsEnabled: boolean;
+}
+
+function DemoForm({
+  base,
+  k,
+  geofence,
+  onDone,
+}: {
+  base: string;
+  k: string;
+  geofence: boolean;
+  onDone: (result: ScanResult, demoDays: number, alreadyRegistered: boolean) => void;
+}) {
+  const [opts, setOpts] = useState<DemoOptions | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: '', shiftId: '', seatNumber: '', email: '', examTarget: '', collegeName: '', parentContact: '' });
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [more, setMore] = useState(false);
+  const [error, setError] = useState<{ field?: string; message: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const res = await fetch(`${base}/options?k=${encodeURIComponent(k)}`, { credentials: 'same-origin' });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.error || 'Could not load the form.');
+      setOpts(json.data);
+      setForm((f) => ({ ...f, shiftId: f.shiftId || json.data.shifts[0]?._id || '' }));
+    } catch (err: any) {
+      setLoadError(err.message);
+    }
+  }, [base, k]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!opts) return;
+    if (form.name.trim().length < 2) return setError({ field: 'name', message: 'Please enter your full name.' });
+    if (!form.shiftId) return setError({ field: 'shiftId', message: 'Choose your shift.' });
+    if (opts.freeSeats.length && !form.seatNumber) return setError({ field: 'seatNumber', message: 'Choose a seat.' });
+    setBusy(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append('k', k);
+      for (const [key, v] of Object.entries(form)) if (v.trim()) fd.append(key, v.trim());
+      if (photo) fd.append('photo', photo);
+      if (geofence) {
+        const loc = await getLocation();
+        if (loc) {
+          fd.append('lat', String(loc.lat));
+          fd.append('lng', String(loc.lng));
+        }
+      }
+      const res = await fetch(`${base}/register`, { method: 'POST', body: fd, credentials: 'same-origin' });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        const code: string = json?.code || '';
+        const field = code.startsWith('FIELD_') ? code.slice(6) : code === 'SEAT_TAKEN' ? 'seatNumber' : undefined;
+        setError({ field, message: json?.error || 'Could not start your demo. Please try again.' });
+        if (code === 'SEAT_TAKEN') load();
+        return;
+      }
+      onDone(json.data.scan, opts.demoDays, Boolean(json.data.alreadyRegistered));
+    } catch {
+      setError({ message: 'No internet connection. Please try again.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loadError) {
+    return (
+      <Panel tone="red" icon={AlertTriangle} title="Something went wrong" body={loadError}>
+        <Button className="h-12 w-full" onClick={load}>
+          Try again
+        </Button>
+      </Panel>
+    );
+  }
+  if (!opts) {
+    return (
+      <div className="flex flex-1 items-center justify-center" role="status">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  const fieldErr = (f: string) =>
+    error?.field === f ? (
+      <p className="text-sm text-destructive" role="alert">
+        {error.message}
+      </p>
+    ) : null;
+
+  return (
+    <form onSubmit={submit} noValidate className="space-y-5 rounded-2xl border bg-card p-5 shadow-sm">
+      <div className="rounded-xl bg-amber-500/15 px-4 py-3 text-sm text-amber-900 dark:text-amber-200">
+        <strong>Your number is not registered.</strong> Please fill the demo form — your free {opts.demoDays + 1}-day demo starts
+        right away.
+      </div>
+
+      <div className="flex items-center gap-4">
+        <label className="flex h-20 w-20 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border-2 border-dashed bg-muted/50 text-muted-foreground">
+          {photo ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={URL.createObjectURL(photo)} alt="Your photo" className="h-full w-full object-cover" />
+          ) : (
+            <Smartphone className="h-6 w-6" />
+          )}
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            capture="user"
+            className="sr-only"
+            disabled={!opts.uploadsEnabled}
+            onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
+            aria-label="Your photo"
+          />
+        </label>
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <Label htmlFor="d-name">Full name *</Label>
+          <Input id="d-name" className="h-12 text-base" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus />
+          {fieldErr('name')}
+        </div>
+      </div>
+      {opts.uploadsEnabled && <p className="-mt-2 text-xs text-muted-foreground">Tap the circle to take a photo (optional).</p>}
+
+      <div className="space-y-1.5">
+        <Label htmlFor="d-shift">Shift *</Label>
+        <select
+          id="d-shift"
+          className="h-12 w-full rounded-md border border-input bg-transparent px-3 text-base"
+          value={form.shiftId}
+          onChange={(e) => setForm({ ...form, shiftId: e.target.value })}
+        >
+          {opts.shifts.map((sh) => (
+            <option key={sh._id} value={sh._id}>
+              {sh.name} ({formatTime(sh.startTime)}–{formatTime(sh.endTime)})
+            </option>
+          ))}
+        </select>
+        {fieldErr('shiftId')}
+      </div>
+
+      <div className="space-y-1.5">
+        <Label>Seat {opts.freeSeats.length ? '*' : ''}</Label>
+        {opts.freeSeats.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No seat is free right now — the librarian will give you one.</p>
+        ) : (
+          <div className="grid grid-cols-5 gap-2" role="radiogroup" aria-label="Seat">
+            {opts.freeSeats.map((n) => {
+              const on = form.seatNumber === String(n);
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setForm({ ...form, seatNumber: String(n) })}
+                  className={cn(
+                    'flex h-12 items-center justify-center rounded-lg border-2 text-base font-semibold tabular-nums',
+                    on ? 'border-amber-500 bg-amber-100 text-amber-900' : 'border-emerald-300 bg-emerald-50 text-emerald-900'
+                  )}
+                >
+                  {n}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {fieldErr('seatNumber')}
+      </div>
+
+      <button type="button" className="text-sm font-medium text-primary" onClick={() => setMore((m) => !m)} aria-expanded={more}>
+        {more ? 'Hide' : 'Add'} more details (optional)
+      </button>
+      {more && (
+        <div className="space-y-3">
+          {(
+            [
+              ['email', 'Email', 'email'],
+              ['examTarget', 'Exam you’re preparing for', 'text'],
+              ['collegeName', 'College', 'text'],
+              ['parentContact', 'Parent’s mobile', 'tel'],
+            ] as const
+          ).map(([key, label, type]) => (
+            <div key={key} className="space-y-1.5">
+              <Label htmlFor={`d-${key}`}>{label}</Label>
+              <Input id={`d-${key}`} type={type} className="h-11" value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+              {fieldErr(key)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && !error.field && (
+        <p className="text-sm text-destructive" role="alert">
+          {error.message}
+        </p>
+      )}
+
+      <Button type="submit" className="h-12 w-full text-base" disabled={busy}>
+        {busy && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
+        Start my free demo
+      </Button>
+    </form>
+  );
+}
+
+function DemoStarted({ result: r, demoDays, tz }: { result: ScanResult; demoDays: number; tz: string }) {
+  const checkedIn = r.outcome === 'CHECKED_IN';
+  const end = r.membership?.endDate
+    ? new Intl.DateTimeFormat('en-IN', { timeZone: tz, day: 'numeric', month: 'short' }).format(new Date(r.membership.endDate))
+    : null;
+  return (
+    <Panel
+      tone="green"
+      icon={CheckCircle2}
+      title="Your demo has started!"
+      body={checkedIn ? 'You are checked in. Enjoy your study session.' : 'Scan the QR during your shift to check in.'}
+    >
+      <Rows
+        rows={[
+          ['Library', r.library.name],
+          ['Name', r.student?.name],
+          ['Seat', r.student?.seatNumber ?? 'Librarian will assign'],
+          ['Shift', r.shift ? `${r.shift.name} · ${formatTime(r.shift.startTime)}–${formatTime(r.shift.endTime)}` : '—'],
+          ['Demo', end ? `${demoDays + 1} days, until ${end}` : `${demoDays + 1} days`],
+          ...(checkedIn ? ([['Checked in', r.attendance?.checkInAt ? formatInstant(r.attendance.checkInAt, tz) : '—']] as [string, React.ReactNode][]) : []),
+        ]}
+      />
+      <p className="text-center text-xs text-muted-foreground">Scan the QR again when you leave.</p>
+    </Panel>
+  );
 }

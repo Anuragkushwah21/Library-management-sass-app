@@ -109,7 +109,27 @@ export async function PUT(
     } = body;
 
     if (name !== undefined) updateData.name = name;
-    if (email !== undefined) updateData.email = email;
+    if (email !== undefined && String(email).trim().toLowerCase() !== existingStudent.email) {
+      const clean = String(email).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
+        return NextResponse.json({ success: false, error: 'Enter a valid email address.' }, { status: 400 });
+      }
+      if (existingStudent.libraryId) {
+        const taken = await Student.findOne({
+          _id: { $ne: existingStudent._id },
+          libraryId: existingStudent.libraryId,
+          email: clean,
+          status: { $ne: 'REJECTED' },
+        }).select('name');
+        if (taken) {
+          return NextResponse.json(
+            { success: false, error: `This email is already registered to ${taken.name}.` },
+            { status: 409 }
+          );
+        }
+      }
+      updateData.email = clean;
+    }
     if (phone !== undefined && phone !== existingStudent.phone) {
       const e164 = normalizePhone(phone);
       if (!e164) {

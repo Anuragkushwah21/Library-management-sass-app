@@ -5,6 +5,7 @@ import { connectDB } from '@/lib/db';
 import { handleRouteError, successResponse } from '@/lib/api-response';
 import { enforceRateLimit } from '@/lib/rate-limit';
 import { libraryFromQr } from '@/lib/services/library';
+import { assertQrOtpAccess } from '@/lib/services/qr-access';
 import { scan } from '@/lib/services/checkin';
 import { readStudentSession } from '@/lib/student-session';
 
@@ -29,6 +30,8 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     const { slug } = await params;
     const { k, location } = Body.parse(await request.json().catch(() => ({})));
     const library = await libraryFromQr(slug, k);
+    // §12.2: admin-controlled access is checked before anything else
+    await assertQrOtpAccess(library);
 
     const session = readStudentSession(request, String(library._id));
     if (!session) {

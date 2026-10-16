@@ -9,6 +9,7 @@ import { Student } from '@/lib/models/Students';
 import { ManualAttendanceSchema } from '@/lib/validation-library';
 import { checkOut, createCheckIn, libraryTz } from '@/lib/services/attendance';
 import { logAudit } from '@/lib/services/audit';
+import { endOfDay, startOfDay } from '@/lib/demo-rules';
 import { addDaysToKey, crossesMidnight, hhmmToMinutes, localDateKey, shiftOccurrence, zonedTimeToUtc } from '@/lib/time';
 
 export const runtime = 'nodejs';
@@ -33,6 +34,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'You cannot mark attendance for a future date.' }, { status: 400 });
     }
 
+    // R14: only students in a running demo or membership, and only on their dates
+    if (!['DEMO', 'ACTIVE_MEMBER'].includes(student.status)) {
+      return NextResponse.json(
+        { success: false, error: `${student.name} is ${student.status.toLowerCase().replace('_', ' ')} — attendance can't be marked.` },
+        { status: 409 }
+      );
+    }
+    const dayStart = startOfDay(data.date, tz);
+    const dayEnd = endOfDay(data.date, tz);
+    if (student.status === 'DEMO') {
+      if (student.demoStartDate && student.demoStartDate > dayEnd) {
+        return NextResponse.json({ success: false, error: `${student.name}'s demo starts on ${localDateKey(student.demoStartDate, tz)}.` }, { status: 409 });
+      }
+      if (student.demoEndDate && student.demoEndDate < dayStart) {
+        return NextResponse.json({ success: false, error: `${student.name}'s demo ended on ${localDateKey(student.demoEndDate, tz)}.` }, { status: 409 });
+      }
+    } else if (student.membershipEndDate && student.membershipEndDate < dayStart) {
+      return NextResponse.json({ success: false, error: `${student.name}'s membership ended on ${localDateKey(student.membershipEndDate, tz)}.` }, { status: 409 });
+    }
+
     const occ = shiftOccurrence(shift, data.date, tz);
     let at = now;
     if (data.time) {
@@ -47,6 +68,75 @@ export async function POST(request: NextRequest) {
     }
 
     const existing = await Attendance.findOne({ studentId: student._id, shiftId: shift._id, date: data.date });
+    const entryType = student.status === 'DEMO' ? 'DEMO' : 'MEMBER';
+
+    // D17: roll-call style, no real times
+    if (data.action === 'present' || data.action === 'absent') {
+      const present = data.action === 'present';
+      if (existing?.checkInAt && existing.timesRecorded !== false) {
+        if (present) {
+          return NextResponse.json({ success: false, error: `${student.name} already has a check-in for this shift.` }, { status: 409 });
+        }
+        if (!data.force) {
+          return NextResponse.json(
+            { success: false, error: `${student.name} checked in at this shift. Confirm to mark absent anyway.`, code: 'NEEDS_FORCE' },
+            { status: 409 }
+          );
+        }
+      }
+      const fields = present
+        ? {
+            checkInAt: occ.start,
+            checkOutAt: occ.end,
+            totalMinutes: 0,
+            arrivalStatus: 'PRESENT',
+            status: 'PRESENT',
+            lateMinutes: 0,
+          }
+        : {
+            checkInAt: null,
+            checkOutAt: null,
+            totalMinutes: 0,
+            arrivalStatus: 'ABSENT',
+            status: 'ABSENT',
+            lateMinutes: 0,
+          };
+      const record = await Attendance.findOneAndUpdate(
+        { studentId: student._id, shiftId: shift._id, date: data.date },
+        {
+          $set: {
+            ...fields,
+            leftEarly: false,
+            isInside: false,
+            autoCheckedOut: false,
+            timesRecorded: false,
+            source: 'MANUAL',
+            manuallyEdited: true,
+            overriddenBy: ctx.userId,
+            entryType,
+            ...(data.note ? { note: data.note } : {}),
+          },
+          $setOnInsert: {
+            libraryId: ctx.libraryId,
+            seatNumber: student.seatNumber ?? null,
+            shiftStartAt: occ.start,
+            shiftEndAt: occ.end,
+          },
+        },
+        { upsert: true, returnDocument: 'after' }
+      );
+      await logAudit({
+        action: present ? 'attendance.manual_present' : 'attendance.manual_absent',
+        actorId: ctx.userId,
+        actorRole: 'librarian',
+        libraryId: ctx.libraryId,
+        entity: 'Attendance',
+        entityId: String(record?._id),
+        meta: { studentId: data.studentId, shiftId: data.shiftId, date: data.date, forced: Boolean(data.force) },
+        request,
+      });
+      return NextResponse.json(successResponse(record, present ? 'Marked present' : 'Marked absent'));
+    }
 
     if (data.action === 'checkin') {
       if (existing?.checkInAt) {

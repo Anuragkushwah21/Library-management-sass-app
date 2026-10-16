@@ -62,7 +62,7 @@ export async function POST(
 
     // Email fail hone se approval revert nahi karna
     notifyLibrarianOfDecision(
-      { name: librarian.name, email: librarian.email },
+      { _id: librarian._id, name: librarian.name, email: librarian.email },
       true
     ).catch(() => {});
 

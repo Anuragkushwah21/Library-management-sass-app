@@ -6,7 +6,7 @@ const GROUPS = [
     title: 'Product',
     links: [
       { href: '/#features', label: 'Features' },
-      { href: '/#how-it-works', label: 'How it works' },
+      { href: '/how-it-works', label: 'How it works' },
       { href: '/register', label: 'Get started' },
       { href: '/login', label: 'Sign in' },
     ],

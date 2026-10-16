@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/db';
 import { requireLibraryContext } from '@/lib/middleware/auth';
+import { assertQrOtpAccess } from '@/lib/services/qr-access';
 import { handleRouteError, successResponse } from '@/lib/api-response';
 import { Library } from '@/lib/models/Library';
 import { logAudit } from '@/lib/services/audit';
@@ -12,6 +13,8 @@ export async function POST(request: NextRequest) {
   try {
     await connectDB();
     const ctx = await requireLibraryContext(request);
+    // The QR itself is part of the paid service: no access, no QR to print (§12.4)
+    await assertQrOtpAccess(ctx.library);
     const updated = await Library.findByIdAndUpdate(ctx.libraryId, { $inc: { qrVersion: 1 } }, { returnDocument: 'after' });
 
     await logAudit({

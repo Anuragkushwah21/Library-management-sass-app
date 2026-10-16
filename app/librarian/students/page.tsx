@@ -17,6 +17,8 @@ import {
 } from '@/components/ui/tooltip';
 import { Pencil, Trash2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { DemoStudentsPanel } from '@/components/librarian/demo-students-panel';
+import { ActivationDialog, type ActivatableStudent } from '@/components/librarian/activation-dialog';
 import {
   Select,
   SelectContent,
@@ -28,9 +30,21 @@ import {
 type PaymentStatus = 'paid' | 'unpaid' | 'pending';
 type MembershipStatus = 'active' | 'inactive' | 'expired';
 
+type Tab = 'demo' | 'active' | 'ended' | 'expired' | 'blocked';
+
+/** Each tab is just a status filter, so a status change moves the student (PLAN §2.1). */
+const TABS: { key: Tab; label: string; status?: string }[] = [
+  { key: 'demo', label: 'Demo Students' },
+  { key: 'active', label: 'All Students', status: 'ACTIVE_MEMBER' },
+  { key: 'ended', label: 'Demo Ended' },
+  { key: 'expired', label: 'Expired', status: 'EXPIRED' },
+  { key: 'blocked', label: 'Blocked', status: 'BLOCKED' },
+];
+
 interface StudentRow {
   _id: string;
   name: string;
+  status?: string;
   email: string;
   phone: string;
   paymentStatus: PaymentStatus;
@@ -52,6 +66,8 @@ interface SeatRow {
 }
 
 export default function StudentsPage() {
+  const [tab, setTab] = useState<Tab>('active');
+  const [renewing, setRenewing] = useState<ActivatableStudent | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -92,6 +108,8 @@ export default function StudentsPage() {
 
       const params: Record<string, any> = {};
       if (search) params.search = search;
+      const tabStatus = TABS.find((t) => t.key === tab)?.status;
+      if (tabStatus) params.status = tabStatus;
       params.page = pageArg ?? page;
       params.pageSize = pageSizeArg ?? pageSize;
 
@@ -136,11 +154,24 @@ export default function StudentsPage() {
     }
   };
 
+  // Open a specific tab from a link, e.g. /librarian/students?tab=demo
   useEffect(() => {
-    // initial load / page change
-    fetchStudents(searchTerm || undefined, page, pageSize);
+    const t = new URLSearchParams(window.location.search).get('tab') as Tab | null;
+    if (t && TABS.some((x) => x.key === t)) setTab(t);
+  }, []);
+
+  const switchTab = (t: Tab) => {
+    setTab(t);
+    setPage(1);
+    setEditingId(null);
+    window.history.replaceState(null, '', `?tab=${t}`);
+  };
+
+  useEffect(() => {
+    // initial load / page change / tab change
+    if (TABS.find((t) => t.key === tab)?.status) fetchStudents(searchTerm || undefined, page, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize]);
+  }, [page, pageSize, tab]);
 
   const handleSearchChange = (
     e: React.ChangeEvent<HTMLInputElement>
@@ -440,6 +471,11 @@ export default function StudentsPage() {
                 </>
               ) : (
                 <>
+                  {tab === 'expired' && (
+                    <Button size="sm" onClick={() => setRenewing(student as any)}>
+                      Renew
+                    </Button>
+                  )}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -485,7 +521,7 @@ export default function StudentsPage() {
         },
       },
     ],
-    [editingId, availableSeats]
+    [editingId, availableSeats, tab]
   );
 
   const totalPages =
@@ -501,16 +537,43 @@ export default function StudentsPage() {
         <div className="flex flex-wrap justify-between items-center gap-3">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">
-              All Students
+              Students
             </h1>
             <p className="text-muted-foreground">
-              Manage and view all student records
+              Demo students, members and follow-ups in one place
             </p>
           </div>
-          <Link href="/librarian/students/add">
-            <Button>Add Student</Button>
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/librarian/students/add-demo">
+              <Button variant="outline">Add Demo Student</Button>
+            </Link>
+            <Link href="/librarian/students/add">
+              <Button>Add Member</Button>
+            </Link>
+          </div>
         </div>
+
+        <div className="flex gap-1 overflow-x-auto rounded-lg border bg-muted/40 p-1" role="tablist" aria-label="Student lists">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              role="tab"
+              aria-selected={tab === t.key}
+              onClick={() => switchTab(t.key)}
+              className={
+                'whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors ' +
+                (tab === t.key ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground')
+              }
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'demo' || tab === 'ended' ? (
+          <DemoStudentsPanel mode={tab === 'demo' ? 'DEMO' : 'DEMO_ENDED'} />
+        ) : (
+        <>
 
         <div className="w-full max-w-sm">
           <Input
@@ -710,7 +773,15 @@ export default function StudentsPage() {
             </Select>
           </div>
         </div>
+        </>
+        )}
       </div>
+
+      <ActivationDialog
+        student={renewing}
+        onClose={() => setRenewing(null)}
+        onDone={() => fetchStudents(searchTerm || undefined, page, pageSize)}
+      />
     </TooltipProvider>
   );
 }

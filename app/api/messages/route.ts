@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import mongoose from 'mongoose';
 import { connectDB } from '@/lib/db';
+import { notifyAdmins } from '@/lib/services/notify';
 import { Message } from '@/lib/models/Message';
 import { requireAdmin } from '@/lib/middleware/auth';
 import { handleRouteError } from '@/lib/api-response';
@@ -55,6 +56,14 @@ export async function POST(req: NextRequest) {
       email: parsed.email,
       subject: parsed.subject,
       message: parsed.message,
+    });
+
+    await notifyAdmins({
+      section: 'messages',
+      type: 'contact.message',
+      title: `New message from ${newMessage.name}`,
+      body: newMessage.subject || String(newMessage.message || '').slice(0, 120),
+      link: '/admin/messages',
     });
 
     return NextResponse.json(

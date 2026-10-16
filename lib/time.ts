@@ -168,4 +168,14 @@ export function formatMinutes(total: number): string {
   return m ? `${h}h ${m}m` : `${h}h`;
 }
 
+/** Lateness for people: 25 → "25 min", 90 → "1 hour 30 min", 120 → "2 hours". */
+export function formatLate(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  if (total < 60) return `${total} min`;
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  const hours = `${h} hour${h === 1 ? '' : 's'}`;
+  return m ? `${hours} ${m} min` : hours;
+}
+
 export { MIN_MS, DAY_MS };

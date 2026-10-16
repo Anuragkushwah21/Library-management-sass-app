@@ -4,6 +4,7 @@ import { connectDB } from '@/lib/db';
 import { handleRouteError, successResponse } from '@/lib/api-response';
 import { libraryFromQr } from '@/lib/services/library';
 import { libraryIsAvailable } from '@/lib/services/checkin';
+import { qrAccessState } from '@/lib/services/qr-access';
 import { readStudentSession } from '@/lib/student-session';
 import { maskPhone } from '@/lib/phone';
 
@@ -24,6 +25,9 @@ export async function GET(request: NextRequest, { params }: Ctx) {
       successResponse({
         library: { name: library.name, phone: library.phone ?? null, address: library.address ?? null },
         available: await libraryIsAvailable(library),
+        // Never 403 here: the page needs these to show the right message
+        // without ever calling the OTP APIs (§12.4)
+        ...(await qrAccessState(library)),
         timezone: library.settings?.timezone || 'Asia/Kolkata',
         geofence: Boolean(geo?.enabled && geo.lat != null && geo.lng != null),
         session: session ? { phone: maskPhone(session.phone) } : null,

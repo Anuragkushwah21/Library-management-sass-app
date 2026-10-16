@@ -22,6 +22,8 @@ interface LibraryForm {
   lat: number | null;
   lng: number | null;
   radiusMeters: string;
+  otpEnabled: boolean;
+  demoDays: string;
 }
 
 const TIMEZONES = ['Asia/Kolkata', 'Asia/Dubai', 'Asia/Kathmandu', 'Asia/Dhaka', 'Europe/London', 'America/New_York', 'UTC'];
@@ -49,6 +51,8 @@ export function LibrarySettingsCard() {
         lat: s.geofence?.lat ?? null,
         lng: s.geofence?.lng ?? null,
         radiusMeters: String(s.geofence?.radiusMeters ?? 200),
+        otpEnabled: Boolean(data.qrAccess?.qrAttendanceEnabled && data.qrAccess?.accessStatus === 'ACTIVE'),
+        demoDays: String(s.demoDays ?? 3),
       });
     } catch (err: any) {
       setError(err.message || 'Could not load library settings.');
@@ -92,6 +96,7 @@ export function LibrarySettingsCard() {
           timezone: form.timezone,
           graceMinutes: Number(form.graceMinutes),
           earlyCheckinMinutes: Number(form.earlyCheckinMinutes),
+          demoDays: Number(form.demoDays) || 3,
           geofence: {
             enabled: form.geofenceEnabled,
             lat: form.lat,
@@ -193,6 +198,42 @@ export function LibrarySettingsCard() {
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">QR attendance</p>
+                  <p className="text-xs text-muted-foreground">
+                    Managed by the platform admin.{' '}
+                    <a href="/librarian/qr-attendance" className="text-primary hover:underline">
+                      Open QR Attendance
+                    </a>
+                  </p>
+                </div>
+                <span
+                  className={
+                    'rounded-full px-2.5 py-1 text-xs font-semibold ' +
+                    (form.otpEnabled ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground')
+                  }
+                >
+                  {form.otpEnabled ? 'Enabled' : 'Off'}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+                <Label htmlFor="lib-demo" className="text-sm">
+                  Demo length (days after start)
+                </Label>
+                <Input
+                  id="lib-demo"
+                  type="number"
+                  min={1}
+                  max={30}
+                  className="h-8 w-20"
+                  value={form.demoDays}
+                  onChange={(e) => setForm({ ...form, demoDays: e.target.value })}
+                />
               </div>
             </div>
 

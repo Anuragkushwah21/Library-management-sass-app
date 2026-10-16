@@ -54,7 +54,7 @@ export async function POST(
     console.log('❌ Librarian rejected:', librarian.email);
 
     notifyLibrarianOfDecision(
-      { name: librarian.name, email: librarian.email },
+      { _id: librarian._id, name: librarian.name, email: librarian.email },
       false,
       reason
     ).catch(() => {});

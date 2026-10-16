@@ -36,10 +36,16 @@ export function BottomNav({
   onMore,
   tabs = LIBRARIAN_TABS,
   className = 'md:hidden',
+  badges = {},
+  moreBadge = 0,
 }: {
   onMore: () => void;
   tabs?: BottomNavTab[];
   className?: string;
+  /** Count per tab href, e.g. { '/librarian/students': 3 } */
+  badges?: Record<string, number>;
+  /** Count for items hidden under "More" */
+  moreBadge?: number;
 }) {
   const pathname = usePathname();
 
@@ -75,13 +81,25 @@ export function BottomNav({
               aria-current={active ? 'page' : undefined}
               className={itemClass(active)}
             >
-              <Icon className={cn('h-5 w-5', active && 'stroke-[2.5]')} />
+              <span className="relative">
+                <Icon className={cn('h-5 w-5', active && 'stroke-[2.5]')} />
+                {!!badges[href] && (
+                  <span className="absolute -right-2.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[9px] font-bold text-white ring-2 ring-card">
+                    {badges[href] > 99 ? '99+' : badges[href]}
+                  </span>
+                )}
+              </span>
               {label}
             </Link>
           );
         })}
         <button type="button" onClick={onMore} className={itemClass(false)}>
-          <Menu className="h-5 w-5" />
+          <span className="relative">
+            <Menu className="h-5 w-5" />
+            {moreBadge > 0 && (
+              <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-rose-600 ring-2 ring-card" aria-label={`${moreBadge} more notifications`} />
+            )}
+          </span>
           More
         </button>
       </div>

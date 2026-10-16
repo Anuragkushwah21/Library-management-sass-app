@@ -4,7 +4,7 @@ import { getOtpChannel, OtpConfigError } from '@/lib/otp/channels';
 const KEYS = [
   'OTP_CHANNEL', 'ALLOW_CONSOLE_OTP', 'OTP_SMS_TEMPLATE',
   'MSG91_AUTH_KEY', 'MSG91_TEMPLATE_ID', 'MSG91_OTP_VAR',
-  'FAST2SMS_API_KEY', 'TWOFACTOR_API_KEY', 'TWOFACTOR_TEMPLATE',
+  'FAST2SMS_API_KEY', 'FAST2SMS_ROUTE', 'TWOFACTOR_API_KEY', 'TWOFACTOR_TEMPLATE',
   'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM', 'TWILIO_MESSAGING_SERVICE_SID',
   'OTP_WEBHOOK_URL', 'OTP_WEBHOOK_METHOD', 'OTP_WEBHOOK_HEADERS', 'OTP_WEBHOOK_BODY', 'OTP_WEBHOOK_SUCCESS_TEXT',
 ];
@@ -70,6 +70,20 @@ describe('request shape per provider', () => {
     expect((init.headers as any).authorization).toBe('KEY');
     expect(JSON.parse(init.body as string)).toEqual({ route: 'otp', variables_values: '654321', numbers: '9876543210' });
     await expect(getOtpChannel().send('+14155550100', '1', 'L')).rejects.toThrow(/Indian/);
+  });
+
+  it('fast2sms quick route sends our own message text', async () => {
+    setEnv({ OTP_CHANNEL: 'fast2sms', FAST2SMS_API_KEY: 'KEY', FAST2SMS_ROUTE: 'q' });
+    await getOtpChannel().send('+919876543210', '135790', 'Lib One');
+    const body = JSON.parse(lastCall().init.body as string);
+    expect(body).toMatchObject({ route: 'q', numbers: '9876543210' });
+    expect(body.message).toContain('135790');
+    expect(body.message).toContain('Lib One');
+  });
+
+  it('fast2sms rejects an unknown route before sending', () => {
+    setEnv({ OTP_CHANNEL: 'fast2sms', FAST2SMS_API_KEY: 'KEY', FAST2SMS_ROUTE: 'dlt' });
+    expect(() => getOtpChannel()).toThrow(/FAST2SMS_ROUTE/);
   });
 
   it('2factor puts key, phone and code in the URL', async () => {

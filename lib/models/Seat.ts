@@ -11,7 +11,8 @@ const seatSchema = new Schema(
       required: true,
     },
 
-    // Current seat status
+    // Stored status: 'reserved' = assigned to a student. "Occupied" (student
+    // inside right now) is computed from attendance in GET /api/seats.
     status: {
       type: String,
       enum: ['available', 'reserved', 'occupied'],

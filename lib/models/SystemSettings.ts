@@ -7,6 +7,11 @@ export interface ISystemSettings extends Document {
   autoApproveLibrarians: boolean;
   maintenanceMode: boolean;
   trialDays: number;
+  /** Price of the QR attendance add-on shown to librarians (₹/month, 0 = not shown) */
+  qrServicePrice: number;
+  /** Price per SMS credit shown to librarians (₹, 0 = not shown) */
+  smsCreditPrice: number;
+  qrServiceNote?: string;
 }
 
 const SystemSettingsSchema = new Schema<ISystemSettings>(
@@ -16,6 +21,9 @@ const SystemSettingsSchema = new Schema<ISystemSettings>(
     autoApproveLibrarians: { type: Boolean, default: false },
     maintenanceMode: { type: Boolean, default: false },
     trialDays: { type: Number, default: 3, min: 0, max: 365 },
+    qrServicePrice: { type: Number, default: 0, min: 0 },
+    smsCreditPrice: { type: Number, default: 0, min: 0 },
+    qrServiceNote: { type: String, trim: true, maxlength: 300 },
   },
   { timestamps: true }
 );

@@ -87,6 +87,8 @@ export async function createCheckIn(args: {
         isInside: true,
         leftEarly: false,
         status: 'CURRENTLY_INSIDE',
+        timesRecorded: true,
+        entryType: student.status === 'DEMO' ? 'DEMO' : 'MEMBER',
         source,
         ...(source === 'MANUAL'
           ? { manuallyEdited: true, overriddenBy: args.actorId ?? null }

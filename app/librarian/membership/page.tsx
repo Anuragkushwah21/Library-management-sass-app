@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/librarian/data-table';
+import { formatTime } from '@/lib/time';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -40,6 +41,10 @@ interface StudentRow {
   paymentStatus: PaymentStatus;
   membershipStatus: MembershipStatus;
   membershipEndDate?: string | null;
+  seatNumber?: number | null;
+  shiftId?: string | null;
+  /** Filled in on the page from the library's shifts */
+  shift?: { name: string; startTime: string; endTime: string } | null;
   createdAt: string;
 }
 
@@ -51,6 +56,20 @@ const baseColumns: ColumnDef<StudentRow>[] = [
   {
     accessorKey: 'email',
     header: 'Email',
+  },
+  {
+    accessorKey: 'seatNumber',
+    header: 'Seat',
+    cell: ({ row }) => {
+      const seat = row.getValue('seatNumber') as number | null | undefined;
+      return seat ? (
+        <Badge variant="outline" className="font-semibold tabular-nums">
+          Seat {seat}
+        </Badge>
+      ) : (
+        <span className="text-sm text-muted-foreground">No seat</span>
+      );
+    },
   },
   {
     accessorKey: 'membershipEndDate',
@@ -97,6 +116,23 @@ const baseColumns: ColumnDef<StudentRow>[] = [
     },
   },
   {
+    id: 'shift',
+    header: 'Shift',
+    cell: ({ row }) => {
+      const shift = row.original.shift;
+      return shift ? (
+        <div className="leading-tight">
+          <p className="font-medium">{shift.name}</p>
+          <p className="text-xs text-muted-foreground">
+            {formatTime(shift.startTime)}–{formatTime(shift.endTime)}
+          </p>
+        </div>
+      ) : (
+        <span className="text-sm text-muted-foreground">—</span>
+      );
+    },
+  },
+  {
     accessorKey: 'paymentStatus',
     header: 'Payment Status',
     cell: ({ row }) => {
@@ -138,11 +174,26 @@ export default function MembershipsPage() {
   const fetchStudents = async () => {
     try {
       setLoading(true);
-      const res: any = await api.getStudents();
+      const [res, shiftRes]: any[] = await Promise.all([
+        api.getStudents(),
+        // Shift names are optional garnish — never fail the page over them
+        api.getShifts().catch(() => ({ data: [] })),
+      ]);
       const list = Array.isArray(res.data)
         ? res.data
         : res;
-      setStudents(list as StudentRow[]);
+      const shiftById = new Map<string, StudentRow['shift']>(
+        (shiftRes.data ?? []).map((sh: any) => [
+          String(sh._id),
+          { name: sh.name, startTime: sh.startTime, endTime: sh.endTime },
+        ])
+      );
+      setStudents(
+        (list as StudentRow[]).map((st) => ({
+          ...st,
+          shift: st.shiftId ? shiftById.get(String(st.shiftId)) ?? null : null,
+        }))
+      );
     } catch (error: any) {
       console.error(
         '[MembershipsPage] fetch error:',

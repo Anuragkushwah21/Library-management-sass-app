@@ -150,7 +150,7 @@ export async function POST(request: NextRequest) {
     // A failed email must not undo the request — it is in the pending list either way
     if (autoApprove) {
       notifyLibrarianOfDecision(
-        { name: user.name, email: user.email },
+      { _id: user._id, name: user.name, email: user.email },
         true
       ).catch(() => {});
     } else {

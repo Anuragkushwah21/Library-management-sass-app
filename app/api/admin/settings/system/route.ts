@@ -26,6 +26,9 @@ export async function GET(request: NextRequest) {
           autoApproveLibrarians: settings?.autoApproveLibrarians ?? false,
           maintenanceMode: settings?.maintenanceMode ?? false,
           trialDays: settings?.trialDays ?? DEFAULT_TRIAL_DAYS,
+          qrServicePrice: settings?.qrServicePrice ?? 0,
+          smsCreditPrice: settings?.smsCreditPrice ?? 0,
+          qrServiceNote: settings?.qrServiceNote ?? '',
         },
         'System settings',
         200
@@ -57,6 +60,9 @@ export async function PUT(request: NextRequest) {
       autoApproveLibrarians,
       maintenanceMode,
       trialDays,
+      qrServicePrice,
+      smsCreditPrice,
+      qrServiceNote,
     } = body;
 
     let settings = await SystemSettings.findOne();
@@ -85,6 +91,12 @@ export async function PUT(request: NextRequest) {
     ) {
       settings.trialDays = trialDays;
     }
+
+    // QR add-on pricing shown to librarians (admin only)
+    for (const [key, v] of [['qrServicePrice', qrServicePrice], ['smsCreditPrice', smsCreditPrice]] as const) {
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1_000_000) (settings as any)[key] = Math.round(v * 100) / 100;
+    }
+    if (typeof qrServiceNote === 'string') settings.qrServiceNote = qrServiceNote.trim().slice(0, 300);
 
     await settings.save();
 

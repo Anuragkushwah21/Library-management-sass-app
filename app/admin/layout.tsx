@@ -17,6 +17,7 @@ import {
   Mail,
   CreditCard,
   Megaphone,
+  QrCode,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -32,6 +33,7 @@ import { api, getStoredUser, clearAuthData, isAdmin } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Logo } from '@/components/logo';
+import { CountBadge, NotificationBell, NotificationsProvider, useNotifications } from '@/components/notifications';
 import { BottomNav, type BottomNavTab } from '@/components/librarian/bottom-nav';
 
 // Main sections for the mobile tab bar; the rest stay under "More"
@@ -64,6 +66,11 @@ const sidebarLinks = [
     icon: CreditCard,
   },
   {
+    href: '/admin/qr-access',
+    label: 'QR/OTP Access',
+    icon: QrCode,
+  },
+  {
     href: '/admin/ads',
     label: 'Advertisements',
     icon: Megaphone,
@@ -80,11 +87,26 @@ const sidebarLinks = [
   },
 ];
 
-export default function AdminLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <NotificationsProvider>
+      <AdminShell>{children}</AdminShell>
+    </NotificationsProvider>
+  );
+}
+
+function AdminShell({ children }: { children: React.ReactNode }) {
+  const { feed } = useNotifications();
+  const badgeFor = (href: string) =>
+    href === '/admin/librarians/pending'
+      ? feed?.counts?.pendingApprovals
+      : href === '/admin/messages'
+      ? feed?.counts?.openMessages
+      : href === '/admin/librarians'
+      ? feed?.sections?.librarians
+      : href === '/admin/qr-access'
+      ? feed?.counts?.qrRequests
+      : undefined;
   const router = useRouter();
   const pathname = usePathname();
   const { toast } = useToast();
@@ -161,7 +183,8 @@ export default function AdminLayout({
                   }`}
               >
                 <link.icon className="w-5 h-5" />
-                <span className="font-medium">{link.label}</span>
+                <span className="flex-1 font-medium">{link.label}</span>
+                <CountBadge count={badgeFor(link.href)} />
               </Link>
             );
           })}
@@ -206,11 +229,8 @@ export default function AdminLayout({
           <div className="flex items-center gap-1 sm:gap-3 ml-auto">
             <ThemeToggle />
 
-            {/* Notifications */}
-            <Button variant="ghost" size="icon" className="relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-            </Button>
+            {/* Notifications — real unread count (was a decorative dot) */}
+            <NotificationBell />
 
             {/* User Menu */}
             <DropdownMenu>
@@ -267,6 +287,11 @@ export default function AdminLayout({
 
       <BottomNav
         tabs={bottomTabs}
+        badges={{
+          '/admin/librarians/pending': feed?.counts?.pendingApprovals ?? 0,
+          '/admin/librarians': feed?.sections?.librarians ?? 0,
+        }}
+        moreBadge={feed?.counts?.openMessages ?? 0}
         onMore={() => setIsSidebarOpen(true)}
         className="fixed inset-x-0 bottom-0 z-30 lg:hidden"
       />

@@ -9,6 +9,9 @@ import { Shift } from '@/lib/models/Shift';
 import { normalizePhone } from '@/lib/phone';
 import { deriveMemberStatus } from '@/lib/services/student-status';
 import { ensureDefaultShift } from '@/lib/services/library';
+import { expireDemos } from '@/lib/services/demo';
+import { Attendance } from '@/lib/models/Attendance';
+import { notifyLibrary } from '@/lib/services/notify';
 import mongoose from 'mongoose';
 
 export const runtime = 'nodejs';
@@ -24,12 +27,43 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const search = searchParams.get('search');
 
+
     const query: any = {};
 
     // Multi-tenant: librarian sirf apne students
     if (decoded.role === 'librarian') {
       query.librarianId = userId;
+      // Keep the lists honest without waiting for the cron: finished demos
+      // move to DEMO_ENDED (seat freed), lapsed members to EXPIRED (R4)
+      const libraryId = await libraryIdFor(decoded);
+      if (libraryId) {
+        await expireDemos(libraryId, userId);
+        const lapsed = await Student.find({
+          libraryId,
+          status: 'ACTIVE_MEMBER',
+          membershipEndDate: { $lt: new Date() },
+        }).select('name seatNumber');
+        for (const st of lapsed) {
+          const res = await Student.updateOne(
+            { _id: st._id, status: 'ACTIVE_MEMBER' },
+            { $set: { status: 'EXPIRED', membershipStatus: 'expired' } }
+          );
+          if (res.modifiedCount) {
+            await notifyLibrary(libraryId, {
+              section: 'students',
+              type: 'membership.expired',
+              title: `Membership expired: ${st.name}`,
+              body: st.seatNumber ? `Still holding seat ${st.seatNumber} — renew or free it.` : 'Renew to keep them in All Students.',
+              link: '/librarian/students?tab=expired',
+            });
+          }
+        }
+      }
     }
+
+    const status = searchParams.get('status');
+    if (status && /^[A-Z_]+(,[A-Z_]+)*$/.test(status)) query.status = { $in: status.split(',') };
+    query.archivedAt = null;
 
     if (search) {
       query.$or = [
@@ -40,6 +74,20 @@ export async function GET(request: NextRequest) {
     }
 
     const students = await Student.find(query).sort({ createdAt: -1 });
+
+    // Demo lists show how often each student came and when they last did
+    if (searchParams.get('withStats') === '1' && students.length) {
+      const stats = await Attendance.aggregate([
+        { $match: { studentId: { $in: students.map((st) => st._id) }, arrivalStatus: { $ne: 'ABSENT' } } },
+        { $group: { _id: '$studentId', count: { $sum: 1 }, last: { $max: '$date' } } },
+      ]);
+      const byId = new Map(stats.map((x: any) => [String(x._id), x]));
+      const data = students.map((st) => {
+        const x = byId.get(String(st._id));
+        return { ...st.toObject(), attendanceCount: x?.count ?? 0, lastVisit: x?.last ?? null };
+      });
+      return NextResponse.json({ success: true, data });
+    }
 
     return NextResponse.json({ success: true, data: students });
   } catch (error) {
@@ -71,6 +119,10 @@ export async function POST(request: NextRequest) {
 
     const libraryId = await libraryIdFor(decoded);
 
+    if (typeof email === 'string' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      return NextResponse.json({ success: false, error: 'Enter a valid email address.' }, { status: 400 });
+    }
+
     if (!name || !email || !phone) {
       return NextResponse.json(
         { success: false, error: 'Name, email and phone are required' },
@@ -97,6 +149,19 @@ export async function POST(request: NextRequest) {
       if (duplicate) {
         return NextResponse.json(
           { success: false, error: `${duplicate.name} already uses this phone number.` },
+          { status: 409 }
+        );
+      }
+
+      // One email registers once per library (schema lowercases the query)
+      const sameEmail = await Student.findOne({
+        libraryId,
+        email: String(email),
+        status: { $ne: 'REJECTED' },
+      }).select('name');
+      if (sameEmail) {
+        return NextResponse.json(
+          { success: false, error: `This email is already registered to ${sameEmail.name}.` },
           { status: 409 }
         );
       }

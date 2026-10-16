@@ -13,6 +13,9 @@ export interface IStudentOtp extends Document {
   windowStart: Date;
   sendCount: number;
   lastSentAt?: Date | null;
+  /** Library-local day of dayCount — per-phone daily limit */
+  dayKey?: string;
+  dayCount: number;
   /** TTL: the doc (with its counters) disappears a day after the last send */
   purgeAt: Date;
 }
@@ -27,6 +30,8 @@ const StudentOtpSchema = new Schema<IStudentOtp>(
     windowStart: { type: Date, default: Date.now },
     sendCount: { type: Number, default: 0 },
     lastSentAt: { type: Date, default: null },
+    dayKey: { type: String },
+    dayCount: { type: Number, default: 0 },
     purgeAt: { type: Date, required: true },
   },
   { timestamps: true }

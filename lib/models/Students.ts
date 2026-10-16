@@ -32,6 +32,23 @@ export interface IStudent extends Document {
   /** The shift this student attends (PLAN §2.5) */
   shiftId?: mongoose.Types.ObjectId | null;
   blockedReason?: string;
+  /** How the student joined: librarian form or QR demo form */
+  registrationSource?: 'MANUAL' | 'QR';
+  address?: string;
+  examTarget?: string;
+  collegeName?: string;
+  parentContact?: string;
+  notes?: string;
+  photoUrl?: string;
+  /** Private Cloudinary file — only reachable through a short-lived signed link */
+  idProof?: { publicId: string; format: string; resourceType: string; uploadedAt: Date } | null;
+  demoStartDate?: Date | null;
+  /** Inclusive: the demo runs until the end of this library-local day */
+  demoEndDate?: Date | null;
+  demoExtendedDays?: number;
+  demoEndedAt?: Date | null;
+  activatedAt?: Date | null;
+  archivedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
   libraryId?: mongoose.Types.ObjectId; // multi-tenant per library (optional, if using Library model)
@@ -41,7 +58,10 @@ export interface IStudent extends Document {
 const StudentSchema = new Schema<IStudent>(
   {
     name: { type: String, required: true },
-    email: { type: String, required: true, index: true },
+    // Lowercased so Abc@x.com and abc@x.com are the same student. Optional for
+    // demo students (QR form / quick manual admission); the Add Student form
+    // still requires it.
+    email: { type: String, index: true, lowercase: true, trim: true },
     phone: { type: String, required: true },
 
     // Payment / membership fields
@@ -66,6 +86,28 @@ const StudentSchema = new Schema<IStudent>(
     phoneRaw: { type: String, trim: true },
     shiftId: { type: Schema.Types.ObjectId, ref: 'Shift', default: null },
     blockedReason: { type: String, trim: true },
+
+    registrationSource: { type: String, enum: ['MANUAL', 'QR'], default: 'MANUAL' },
+    // address was sent by the Add Student form but never stored (no field) — fixed
+    address: { type: String, trim: true, maxlength: 300 },
+    examTarget: { type: String, trim: true, maxlength: 80 },
+    collegeName: { type: String, trim: true, maxlength: 120 },
+    parentContact: { type: String, trim: true },
+    notes: { type: String, trim: true, maxlength: 500 },
+    photoUrl: { type: String, trim: true },
+    idProof: {
+      type: new Schema(
+        { publicId: String, format: String, resourceType: String, uploadedAt: Date },
+        { _id: false }
+      ),
+      default: null,
+    },
+    demoStartDate: { type: Date, default: null },
+    demoEndDate: { type: Date, default: null },
+    demoExtendedDays: { type: Number, default: 0 },
+    demoEndedAt: { type: Date, default: null },
+    activatedAt: { type: Date, default: null },
+    archivedAt: { type: Date, default: null },
 
     // Library (for multi-tenant via Library model – optional)
     libraryId: { type: Schema.Types.ObjectId, ref: 'Library' },
@@ -98,6 +140,20 @@ export const UNIQUE_PHONE_INDEX = {
   },
 } as const;
 StudentSchema.index({ libraryId: 1, phone: 1 });
+
+// One email per library, same approach as the phone index above
+export const UNIQUE_EMAIL_INDEX = {
+  key: { libraryId: 1, email: 1 },
+  options: {
+    unique: true,
+    name: 'libraryId_email_unique',
+    partialFilterExpression: {
+      libraryId: { $type: 'objectId' },
+      email: { $type: 'string' },
+      status: { $in: ACTIVE_PHONE_STATUSES },
+    },
+  },
+} as const;
 StudentSchema.index({ libraryId: 1, status: 1 });
 
 export const Student = defineModel<IStudent>('Student', StudentSchema);

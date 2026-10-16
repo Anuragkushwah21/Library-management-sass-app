@@ -4,6 +4,7 @@ import { User } from '@/lib/models/User';
 import { Plan } from '@/lib/models/Plan';
 import { ApiError } from '@/lib/api-response';
 import { planExpiryFrom } from '@/lib/services/access';
+import { notifyAdmins, notifyUser } from '@/lib/services/notify';
 import { createReviewToken } from '@/lib/review-token';
 import {
   sendLibrarianDecisionEmail,
@@ -40,6 +41,14 @@ export async function notifyAdminsOfPendingLibrarian(librarian: {
     console.warn('[LibrarianReview] No admin found to notify.');
     return { notified: 0, failed: 0 };
   }
+
+  await notifyAdmins({
+    section: 'approvals',
+    type: 'librarian.request',
+    title: `${librarian.name || librarian.email} requested approval`,
+    body: librarian.phone ? `${librarian.email} · ${librarian.phone}` : librarian.email,
+    link: '/admin/librarians/pending',
+  });
 
   const token = createReviewToken(String(librarian._id));
 
@@ -80,10 +89,20 @@ export async function notifyAdminsOfPendingLibrarian(librarian: {
 
 /** Send the approve/reject outcome to the librarian. */
 export async function notifyLibrarianOfDecision(
-  librarian: { name?: string; email: string },
+  librarian: { _id?: unknown; name?: string; email: string },
   approved: boolean,
   reason?: string
 ): Promise<void> {
+  if (librarian._id) {
+    await notifyUser(librarian._id, {
+      section: 'account',
+      type: approved ? 'account.approved' : 'account.rejected',
+      title: approved ? 'Your account was approved' : 'Your approval request was not accepted',
+      body: approved ? 'Everything is unlocked. Welcome aboard!' : reason ? `Reason: ${reason}` : undefined,
+      link: '/librarian',
+    });
+  }
+
   const result = await sendLibrarianDecisionEmail({
     recipientEmail: librarian.email,
     recipientName: librarian.name || 'there',

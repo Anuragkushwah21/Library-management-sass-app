@@ -12,7 +12,25 @@ export type AuditAction =
   | 'library.qr_rotated'
   | 'shift.created'
   | 'shift.updated'
-  | 'shift.deleted';
+  | 'shift.deleted'
+  | 'seat.assigned'
+  | 'seat.released'
+  | 'seat.created'
+  | 'seat.deleted'
+  | 'demo.started'
+  | 'demo.extended'
+  | 'demo.ended'
+  | 'demo.expired'
+  | 'membership.activated'
+  | 'payment.recorded'
+  | 'attendance.manual_present'
+  | 'attendance.manual_absent'
+  | 'library.otp_toggled'
+  | 'qr_access.updated'
+  | 'qr_access.credits_added'
+  | 'qr_access.credits_adjusted'
+  | 'qr_access.expired'
+  | 'qr_access.requested';
 
 export function clientIp(req?: NextRequest): string | undefined {
   if (!req) return undefined;

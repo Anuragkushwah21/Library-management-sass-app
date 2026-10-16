@@ -20,3 +20,13 @@ describe('normalizePhone', () => {
     expect(normalizePhone(undefined)).toBeNull();
   });
 });
+
+import { withScheme } from '@/lib/services/library';
+describe('withScheme (QR base URL)', () => {
+  it('adds http for LAN/localhost and https for domains', () => {
+    expect(withScheme('192.168.31.205:3000')).toBe('http://192.168.31.205:3000');
+    expect(withScheme('localhost:3000/')).toBe('http://localhost:3000');
+    expect(withScheme('library.example.com')).toBe('https://library.example.com');
+    expect(withScheme('https://x.vercel.app/')).toBe('https://x.vercel.app');
+  });
+});

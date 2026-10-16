@@ -167,7 +167,7 @@ export async function POST(request: NextRequest) {
 
     // A failed email must not roll back the decision
     notifyLibrarianOfDecision(
-      { name: librarian.name, email: librarian.email },
+      { _id: librarian._id, name: librarian.name, email: librarian.email },
       action === 'approve',
       reason
     ).catch(() => {});

@@ -14,22 +14,25 @@ import {
   UserCircle,
   Settings,
   ClipboardCheck,
+  UserPlus,
   QrCode,
   Clock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Logo } from '@/components/logo';
+import { CountBadge, useNotifications } from '@/components/notifications';
 
 const navItems = [
   { label: 'Dashboard', href: '/librarian', icon: LayoutDashboard },
   { label: 'Attendance', href: '/librarian/attendance', icon: ClipboardCheck },
-  { label: 'All Students', href: '/librarian/students', icon: Users },
+  { label: 'Students', href: '/librarian/students', icon: Users },
+  { label: 'Add Demo Student', href: '/librarian/students/add-demo', icon: UserPlus },
   { label: 'Memberships', href: '/librarian/membership', icon: CreditCard },
-  { label: 'Add Student', href: '/librarian/students/add', icon: Users },
+  { label: 'Add Member', href: '/librarian/students/add', icon: Users },
   { label: 'Seats', href: '/librarian/seats', icon: Armchair },
   { label: 'Books Issue', href: '/librarian/books', icon: BookOpen },
   { label: 'Send Offer', href: '/librarian/offers', icon: Megaphone },
-  { label: 'Library QR', href: '/librarian/library-qr', icon: QrCode },
+  { label: 'QR Attendance', href: '/librarian/qr-attendance', icon: QrCode },
   { label: 'Shifts', href: '/librarian/shifts', icon: Clock },
 
   // New items
@@ -44,6 +47,13 @@ interface SidebarProps {
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
+  const { feed } = useNotifications();
+  // How many things wait in each section (PLAN: badges show where and how many)
+  const badgeFor = (href: string): { n?: number; tone: 'red' | 'amber' } => {
+    if (href === '/librarian/students') return { n: feed?.sections?.students, tone: 'red' };
+    if (href === '/librarian/membership') return { n: feed?.counts?.expiringSoon, tone: 'amber' };
+    return { tone: 'red' };
+  };
 
   return (
     <aside
@@ -100,7 +110,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               onClick={onClose}
             >
               <Icon className="w-5 h-5" />
-              <span>{item.label}</span>
+              <span className="flex-1">{item.label}</span>
+              <CountBadge count={badgeFor(item.href).n} tone={badgeFor(item.href).tone} />
             </Link>
           );
         })}
