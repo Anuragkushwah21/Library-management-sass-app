@@ -1,7 +1,6 @@
 'use client';
 
-import { minForExisting, todayInput } from '@/lib/date-rules';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/librarian/data-table';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -17,6 +16,7 @@ import {
 } from '@/components/ui/tooltip';
 import { IndianRupee, Pencil, Trash2 } from 'lucide-react';
 import { FeesDialog, type FeeStudent } from '@/components/librarian/fees-dialog';
+import { StudentEditDialog } from '@/components/librarian/student-edit-dialog';
 import { api } from '@/lib/api';
 import { DemoStudentsPanel } from '@/components/librarian/demo-students-panel';
 import { ActivationDialog, type ActivatableStudent } from '@/components/librarian/activation-dialog';
@@ -60,44 +60,15 @@ interface StudentRow {
 
 const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 
-type SeatStatus = 'available' | 'reserved' | 'occupied';
-
-interface SeatRow {
-  _id: string;
-  seatNumber: number;
-  status: SeatStatus;
-  studentId?: string | null;
-  studentName?: string;
-  studentEmail?: string;
-}
-
 export default function StudentsPage() {
   const [tab, setTab] = useState<Tab>('active');
   const [renewing, setRenewing] = useState<ActivatableStudent | null>(null);
   const [feesFor, setFeesFor] = useState<FeeStudent | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
+  const closeEdit = useCallback(() => setEditId(null), []);
   const [searchTerm, setSearchTerm] = useState('');
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [loading, setLoading] = useState(false);
-
-  // Edit state
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<{
-    name: string;
-    phone: string;
-    paymentStatus: PaymentStatus;
-    membershipEndDate: string;
-    seatId: string;
-  }>({
-    name: '',
-    phone: '',
-    paymentStatus: 'unpaid',
-    membershipEndDate: '',
-    seatId: 'none',
-  });
-
-  // Seats
-  const [availableSeats, setAvailableSeats] = useState<SeatRow[]>([]);
-  const [loadingSeats, setLoadingSeats] = useState(false);
 
   // Pagination
   const [page, setPage] = useState(1);
@@ -142,26 +113,6 @@ export default function StudentsPage() {
     }
   };
 
-  // ------- Fetch seats for the edit dropdown -------
-  // Saari seats laate hain, sirf `available` nahi — warna jis student ke paas
-  // pehle se seat hai uski apni seat list me hoti hi nahi, aur dropdown
-  // "none" par gir jaata hai. Filter neeche karte hain.
-  const fetchAvailableSeats = async (): Promise<SeatRow[]> => {
-    try {
-      setLoadingSeats(true);
-      const res: any = await api.getSeats();
-      const list = (Array.isArray(res.data) ? res.data : res) as SeatRow[];
-      setAvailableSeats(list);
-      return list;
-    } catch (error: any) {
-      console.error('[StudentsPage] fetch seats error:', error);
-      toast.error(error.message || 'Failed to load seats.');
-      return [];
-    } finally {
-      setLoadingSeats(false);
-    }
-  };
-
   // Open a specific tab from a link, e.g. /librarian/students?tab=demo
   useEffect(() => {
     const t = new URLSearchParams(window.location.search).get('tab') as Tab | null;
@@ -171,7 +122,6 @@ export default function StudentsPage() {
   const switchTab = (t: Tab) => {
     setTab(t);
     setPage(1);
-    setEditingId(null);
     window.history.replaceState(null, '', `?tab=${t}`);
   };
 
@@ -212,161 +162,17 @@ export default function StudentsPage() {
     }
   };
 
-  const updateStudent = async (
-    id: string,
-    payload: {
-      name?: string;
-      phone?: string;
-      paymentStatus?: PaymentStatus;
-      membershipEndDate?: string;
-      seatNumber?: number | null;
-    }
-  ) => {
-    try {
-      await api.updateStudent(id, payload);
-      toast.success('Student updated successfully.');
-      setEditingId(null);
-      await fetchStudents(
-        searchTerm || undefined,
-        page,
-        pageSize
-      );
-    } catch (error: any) {
-      console.error('[StudentsPage] update error:', error);
-      toast.error(
-        error.message ||
-          'Something went wrong while updating student.'
-      );
-    }
-  };
-
-  const startEdit = async (student: StudentRow) => {
-    setEditingId(student._id);
-
-    // Seats pehle laao, phir student ki current seat preselect karo.
-    // Pehle yahan hardcoded 'none' set hota tha — isliye edit kholte hi form
-    // "no seat" dikhata tha, aur save karne par seat chhin jaati thi.
-    const seats = await fetchAvailableSeats();
-
-    const ownSeat = seats.find(
-      (s) =>
-        String(s.studentId || '') === String(student._id) ||
-        (student.seatNumber != null && s.seatNumber === student.seatNumber)
-    );
-
-    setEditForm({
-      name: student.name,
-      phone: student.phone,
-      paymentStatus: student.paymentStatus,
-      membershipEndDate: student.membershipEndDate
-        ? student.membershipEndDate.slice(0, 10)
-        : '',
-      seatId: ownSeat ? ownSeat._id : 'none',
-    });
-  };
-
-  const cancelEdit = () => {
-    setEditingId(null);
-  };
-
-  const handleEditChange = (
-    e:
-      | React.ChangeEvent<HTMLInputElement>
-      | React.ChangeEvent<HTMLSelectElement>
-  ) => {
-    const { name, value } = e.target;
-    setEditForm((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleSeatChange = (value: string) => {
-    setEditForm((prev) => ({ ...prev, seatId: value }));
-  };
-
-  const handleEditSave = async (student: StudentRow) => {
-    if (!editForm.name.trim() || !editForm.phone.trim()) {
-      toast.error('Name and phone are required.');
-      return;
-    }
-
-    if (
-      !['paid', 'unpaid', 'pending'].includes(
-        editForm.paymentStatus as PaymentStatus
-      )
-    ) {
-      toast.error('Invalid payment status.');
-      return;
-    }
-
-    const payload: {
-      name?: string;
-      phone?: string;
-      paymentStatus?: PaymentStatus;
-      membershipEndDate?: string;
-      seatNumber?: number | null;
-    } = {
-      name: editForm.name.trim(),
-      phone: editForm.phone.trim(),
-      // Students with fee records get their status from the fees, never by hand
-      ...(student.fees ? {} : { paymentStatus: editForm.paymentStatus }),
-    };
-
-    if (editForm.membershipEndDate) {
-      const saved = student.membershipEndDate?.slice(0, 10);
-      if (
-        editForm.membershipEndDate !== saved &&
-        editForm.membershipEndDate < todayInput()
-      ) {
-        toast.error('Membership end date cannot be in the past.');
-        return;
-      }
-      payload.membershipEndDate = editForm.membershipEndDate;
-    }
-
-    // Seat SIRF tab bhejo jab librarian ne use actually badla ho.
-    //
-    // Agar seat unchanged hai to `seatNumber` payload me daalte hi nahi —
-    // backend key absent dekh kar seat ko haath nahi lagata. Isi wajah se
-    // membership renew / payment status update par seat student ke paas hi
-    // rehti hai. (Pehle yahan hamesha value jaati thi aur `none` par null
-    // chala jaata tha, jisse seat chup-chaap chhin jaati thi.)
-    const currentSeat = availableSeats.find(
-      (s) => String(s.studentId || '') === String(student._id)
-    );
-    const currentSeatId = currentSeat?._id ?? 'none';
-
-    if (editForm.seatId !== currentSeatId) {
-      if (editForm.seatId === 'none') {
-        payload.seatNumber = null;
-      } else {
-        const seat = availableSeats.find((s) => s._id === editForm.seatId);
-        if (seat) payload.seatNumber = seat.seatNumber;
-      }
-    }
-
-    // Ek hi call — backend Seat aur Student dono ko sync karta hai
-    try {
-      await updateStudent(student._id, payload);
-    } catch (error: any) {
-      console.error('[StudentsPage] student update error:', error);
-      toast.error(error.message || 'Failed to update student.');
-      // Form khula rehne do taaki librarian dobara try kar sake — warna
-      // "Seat already assigned" jaisi error ke baad changes gayab ho jaate hain
-      return;
-    }
-
-    setEditingId(null);
-    await fetchStudents(
-      searchTerm || undefined,
-      page,
-      pageSize
-    );
-  };
-
   const columns: ColumnDef<StudentRow>[] = useMemo(
     () => [
       {
         accessorKey: 'name',
         header: 'Name',
+        cell: ({ row }) => (
+          <button type="button" className="text-left font-medium hover:text-primary hover:underline" onClick={() => setEditId(row.original._id)}>
+            {row.original.name}
+            <span className="block text-xs font-normal text-muted-foreground">{row.original.phone}</span>
+          </button>
+        ),
       },
       {
         accessorKey: 'email',
@@ -470,31 +276,10 @@ export default function StudentsPage() {
         header: 'Actions',
         cell: ({ row }) => {
           const student = row.original;
-          const isEditing = editingId === student._id;
 
           return (
             <div className="flex gap-2">
-              {isEditing ? (
-                <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      handleEditSave(student)
-                    }
-                  >
-                    Save
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={cancelEdit}
-                  >
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <>
+              <>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button size="sm" variant={student.fees?.due ? 'default' : 'outline'} onClick={() => setFeesFor(student)}>
@@ -517,7 +302,7 @@ export default function StudentsPage() {
                         variant="outline"
                         size="sm"
                         onClick={() =>
-                          startEdit(student)
+                          setEditId(student._id)
                         }
                       >
                         <Pencil className="mr-1 h-4 w-4" />
@@ -525,7 +310,7 @@ export default function StudentsPage() {
                     </TooltipTrigger>
                     <TooltipContent>
                       <p>
-                        Edit this student&apos;s details.
+                        View or edit details, seat, shift and dates.
                       </p>
                     </TooltipContent>
                   </Tooltip>
@@ -549,14 +334,13 @@ export default function StudentsPage() {
                       </p>
                     </TooltipContent>
                   </Tooltip>
-                </>
-              )}
+              </>
             </div>
           );
         },
       },
     ],
-    [editingId, availableSeats, tab]
+    [tab]
   );
 
   const totalPages =
@@ -629,142 +413,6 @@ export default function StudentsPage() {
           />
         </div>
 
-        {editingId && (
-          <div className="border rounded-lg p-4 space-y-3 bg-muted/50">
-            <h2 className="text-lg font-semibold">
-              Edit student
-            </h2>
-            <div className="grid gap-3 md:grid-cols-4">
-              <div className="space-y-1">
-                <label className="text-sm font-medium">
-                  Name
-                </label>
-                <Input
-                  name="name"
-                  value={editForm.name}
-                  onChange={handleEditChange}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium">
-                  Phone
-                </label>
-                <Input
-                  name="phone"
-                  value={editForm.phone}
-                  onChange={handleEditChange}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm font-medium">
-                  Membership end
-                </label>
-                <Input
-                  name="membershipEndDate"
-                  type="date"
-                  min={minForExisting(
-                    students
-                      .find((s) => s._id === editingId)
-                      ?.membershipEndDate?.slice(0, 10)
-                  )}
-                  value={editForm.membershipEndDate}
-                  onChange={handleEditChange}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-sm font-medium">
-                  Seat
-                </label>
-                <Select
-                  value={editForm.seatId}
-                  onValueChange={handleSeatChange}
-                >
-                  <SelectTrigger>
-                    <SelectValue
-                      placeholder={
-                        loadingSeats
-                          ? 'Loading seats...'
-                          : 'Select seat'
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">
-                      No seat
-                    </SelectItem>
-                    {availableSeats
-                      // Free seats + is student ki apni seat. Doosron ki
-                      // occupied seats list me nahi aani chahiye.
-                      .filter(
-                        (seat) =>
-                          seat.status === 'available' ||
-                          String(seat.studentId || '') === String(editingId)
-                      )
-                      .map((seat) => {
-                        const isOwn =
-                          String(seat.studentId || '') === String(editingId);
-                        return (
-                          <SelectItem key={seat._id} value={seat._id}>
-                            Seat {seat.seatNumber}
-                            {isOwn && ' (current)'}
-                          </SelectItem>
-                        );
-                      })}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {students.find((x) => x._id === editingId)?.fees ? (
-                <div className="space-y-1">
-                  <label className="text-sm font-medium">Payment</label>
-                  <p className="text-xs text-muted-foreground">
-                    Worked out from the fees. Use the <strong>₹ Fees</strong> button to collect.
-                  </p>
-                </div>
-              ) : (
-              <div className="space-y-1">
-                <label className="text-sm font-medium">
-                  Payment status
-                </label>
-                <select
-                  name="paymentStatus"
-                  value={editForm.paymentStatus}
-                  onChange={handleEditChange}
-                  className="border rounded-md h-9 px-2 text-sm"
-                >
-                  <option value="paid">Paid</option>
-                  <option value="unpaid">Unpaid</option>
-                  <option value="pending">
-                    Pending
-                  </option>
-                </select>
-              </div>
-              )}
-            </div>
-            <div className="flex gap-2 pt-2">
-              <Button
-                size="sm"
-                onClick={() => {
-                  const student = students.find(
-                    (s) => s._id === editingId
-                  );
-                  if (student) handleEditSave(student);
-                }}
-              >
-                Save
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={cancelEdit}
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
         <DataTable columns={columns} data={students} />
 
         {/* Pagination controls */}
@@ -831,6 +479,12 @@ export default function StudentsPage() {
         </>
         )}
       </div>
+
+      <StudentEditDialog
+        studentId={editId}
+        onClose={closeEdit}
+        onSaved={() => fetchStudents(searchTerm || undefined, page, pageSize)}
+      />
 
       <FeesDialog
         student={feesFor}

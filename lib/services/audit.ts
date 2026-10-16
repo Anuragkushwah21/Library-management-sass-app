@@ -8,6 +8,7 @@ export type AuditAction =
   | 'attendance.manual_checkin'
   | 'attendance.manual_checkout'
   | 'attendance.override'
+  | 'attendance.deleted'
   | 'library.settings_updated'
   | 'library.qr_rotated'
   | 'shift.created'

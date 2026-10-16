@@ -70,7 +70,28 @@ export async function POST(request: NextRequest) {
     const existing = await Attendance.findOne({ studentId: student._id, shiftId: shift._id, date: data.date });
     const entryType = student.status === 'DEMO' ? 'DEMO' : 'MEMBER';
 
-    // D17: roll-call style, no real times
+    // Present today, during the shift = a real check-in at this moment; the
+    // librarian then checks the student out when they leave
+    const presentNow = data.action === 'present' && !data.time && data.date === localDateKey(now, tz) && now <= occ.end;
+    if (presentNow) {
+      if (existing?.checkInAt) {
+        return NextResponse.json({ success: false, error: `${student.name} already has a check-in for this shift.` }, { status: 409 });
+      }
+      const { record } = await createCheckIn({ library: ctx.library, student, shift, occ, at: now, source: 'MANUAL', actorId: ctx.userId, note: data.note });
+      await logAudit({
+        action: 'attendance.manual_checkin',
+        actorId: ctx.userId,
+        actorRole: 'librarian',
+        libraryId: ctx.libraryId,
+        entity: 'Attendance',
+        entityId: String(record._id),
+        meta: { studentId: data.studentId, shiftId: data.shiftId, date: data.date, at: now.toISOString(), via: 'present' },
+        request,
+      });
+      return NextResponse.json(successResponse(record, 'Checked in'));
+    }
+
+    // D17: roll-call style, no real times (past days, or after the shift ended)
     if (data.action === 'present' || data.action === 'absent') {
       const present = data.action === 'present';
       if (existing?.checkInAt && existing.timesRecorded !== false) {

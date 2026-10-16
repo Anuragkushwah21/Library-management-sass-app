@@ -386,9 +386,15 @@ async function main() {
 
   section('Manual attendance (Present / Absent)');
   const today = opts.today;
+  const before = Date.now();
   let m = await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: today, action: 'present' });
-  expect('mark present', `${m.data?.status}/${m.data?.entryType}/${m.data?.source}/${m.data?.timesRecorded}`, 'PRESENT/DEMO/MANUAL/false');
+  expect('Present today = checked in now (time recorded, inside)', `${m.data?.status}/${m.data?.entryType}/${m.data?.source}/${m.data?.timesRecorded}/${m.data?.isInside}`, 'CURRENTLY_INSIDE/DEMO/MANUAL/true/true');
+  expect('…check-in time is the moment it was marked', Math.abs(new Date(m.data?.checkInAt).getTime() - before) < 60_000, true);
+  m = await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: today, action: 'checkout' });
+  expect('one-tap Check out when the student leaves', `${m.status}/${m.data?.isInside}/${!!m.data?.checkOutAt}`, '200/false/true');
   m = await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: today, action: 'absent' });
+  expect('absent over a real check-in needs confirmation', `${m.status}/${m.code}`, '409/NEEDS_FORCE');
+  m = await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: today, action: 'absent', force: true });
   expect('mark absent replaces it', m.data?.status, 'ABSENT');
   expect('one record per student per shift-day', await col('attendances').countDocuments({ studentId: oid(demoId) }), 1);
   m = await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: addDays(today, 5), action: 'present' });
@@ -398,6 +404,18 @@ async function main() {
   await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: today, action: 'present' });
   demoList = (await L1.call('GET', '/api/students?status=DEMO&withStats=1')).data ?? [];
   expect('present counts as a visit', demoList.find((x) => x._id === demoId)?.attendanceCount, 1);
+  const entry = await col('attendances').findOne({ studentId: oid(demoId), date: today });
+  expect("B can't delete A's attendance", (await L2.call('DELETE', `/api/attendance/${entry._id}`)).status, 404);
+  expect('delete a wrong entry', `${(await L1.call('DELETE', `/api/attendance/${entry._id}`)).status}/${await col('attendances').countDocuments({ _id: entry._id })}`, '200/0');
+  expect('…deletion audited with a copy', (await col('auditlogs').findOne({ action: 'attendance.deleted', entityId: String(entry._id) }))?.meta?.date, today);
+  await L1.call('POST', '/api/attendance/manual', { studentId: demoId, shiftId: SHIFT, date: today, action: 'present' });
+
+  section('Edit student details');
+  let ed = await L1.call('PUT', `/api/students/${demoId}`, { address: '12 MG Road', name: '  Demo Dev  ' });
+  const edited = await col('students').findOne({ _id: oid(demoId) });
+  expect('edit name + address', `${ed.status}/${edited.name}/${edited.address}`, '200/Demo Dev/12 MG Road');
+  expect('blank name refused', (await L1.call('PUT', `/api/students/${demoId}`, { name: ' ' })).status, 400);
+  expect("B can't edit A's student", (await L2.call('PUT', `/api/students/${demoId}`, { name: 'Hacked' })).status, 403);
 
   section('Demo extend / end / expire');
   let ex = await L1.call('POST', `/api/students/${demoId}/demo`, { action: 'extend', days: 2 });

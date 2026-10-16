@@ -107,9 +107,29 @@ export async function PUT(
       seatNumber,
       shiftId,
       blocked,
+      address,
+      membershipStartDate,
     } = body;
 
-    if (name !== undefined) updateData.name = name;
+    if (name !== undefined) {
+      const clean = String(name).trim();
+      if (clean.length < 2) {
+        return NextResponse.json({ success: false, error: 'Enter the student’s full name.' }, { status: 400 });
+      }
+      updateData.name = clean.slice(0, 80);
+    }
+    if (address !== undefined) updateData.address = String(address ?? '').trim().slice(0, 300);
+    if (membershipStartDate !== undefined) {
+      const d = membershipStartDate ? new Date(membershipStartDate) : null;
+      if (d && Number.isNaN(d.getTime())) {
+        return NextResponse.json({ success: false, error: 'Invalid membership start date.' }, { status: 400 });
+      }
+      const end = membershipEndDate !== undefined ? (membershipEndDate ? new Date(membershipEndDate) : null) : existingStudent.membershipEndDate;
+      if (d && end && end <= d) {
+        return NextResponse.json({ success: false, error: 'Membership end date must be after the start date.' }, { status: 400 });
+      }
+      updateData.membershipStartDate = d;
+    }
     if (email !== undefined && String(email).trim().toLowerCase() !== existingStudent.email) {
       const clean = String(email).trim().toLowerCase();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {

@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   StickyNote,
+  Trash2,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { Card, CardContent } from '@/components/ui/card';
@@ -110,6 +111,8 @@ export default function AttendancePage() {
   } | null>(null);
   const [noteFor, setNoteFor] = useState<{ rec: Rec; note: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyRow, setBusyRow] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Rec | null>(null);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -175,15 +178,49 @@ export default function AttendancePage() {
     }
   };
 
-  /** Roll call: Present / Absent without times (D17) */
+  /** Present today = checked in right now (time recorded); past days = roll call without times */
   const quickMark = async (m: Missing, action: 'present' | 'absent') => {
     if (!data) return;
     try {
-      await api.manualAttendance({ studentId: m.student._id, shiftId: m.shiftId, date: data.date, action });
-      toast.success(`${m.student.name} marked ${action}`);
+      const res: any = await api.manualAttendance({ studentId: m.student._id, shiftId: m.shiftId, date: data.date, action });
+      toast.success(
+        action === 'present' && res.data?.isInside
+          ? `${m.student.name} checked in at ${formatInstant(res.data.checkInAt, data.timezone)}`
+          : `${m.student.name} marked ${action}`
+      );
       await load();
     } catch (err: any) {
       toast.error(err.message);
+    }
+  };
+
+  /** One tap when the student leaves: check out at this moment */
+  const checkOutNow = async (r: Rec) => {
+    if (!data || !r.studentId) return;
+    setBusyRow(r._id);
+    try {
+      await api.manualAttendance({ studentId: r.studentId._id, shiftId: r.shiftId, date: data.date, action: 'checkout' });
+      toast.success(`${r.studentId.name} checked out`);
+      await load();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setBusyRow(null);
+    }
+  };
+
+  const removeEntry = async () => {
+    if (!deleting) return;
+    setBusyRow(deleting._id);
+    try {
+      await api.deleteAttendance(deleting._id);
+      toast.success('Attendance entry deleted');
+      setDeleting(null);
+      await load();
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setBusyRow(null);
     }
   };
 
@@ -369,7 +406,13 @@ export default function AttendancePage() {
                           {r.isInside ? 'Inside' : r.timesRecorded === false ? <span className="text-xs text-muted-foreground">Marked</span> : formatMinutes(r.totalMinutes)}
                         </td>
                         <td className="px-4 py-3">{statusBadge(r)}</td>
-                        <td className="px-2 py-2 text-right">
+                        <td className="whitespace-nowrap px-2 py-2 text-right">
+                          {r.isInside && r.studentId && data.date === data.today && (
+                            <Button size="sm" variant="outline" className="mr-1 border-sky-600/40 text-sky-700 dark:text-sky-400" disabled={busyRow === r._id} onClick={() => checkOutNow(r)}>
+                              {busyRow === r._id ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <LogOut className="mr-1.5 h-3.5 w-3.5" />}
+                              Check out
+                            </Button>
+                          )}
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button variant="ghost" size="icon" aria-label="Actions">
@@ -390,7 +433,7 @@ export default function AttendancePage() {
                                   }
                                 >
                                   <LogOut className="mr-2 h-4 w-4" />
-                                  Check out
+                                  {data.date === data.today ? 'Check out at another time' : 'Check out'}
                                 </DropdownMenuItem>
                               )}
                               {r.arrivalStatus !== 'PRESENT' && (
@@ -407,6 +450,11 @@ export default function AttendancePage() {
                               <DropdownMenuItem onClick={() => setNoteFor({ rec: r, note: r.note ?? '' })}>
                                 <StickyNote className="mr-2 h-4 w-4" />
                                 {r.note ? 'Edit note' : 'Add note'}
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeleting(r)}>
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete entry
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -551,6 +599,27 @@ export default function AttendancePage() {
               </DialogFooter>
             </form>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete this attendance entry?</DialogTitle>
+            <DialogDescription>
+              {deleting?.studentId?.name ?? 'This student'} · {data?.date}
+              {deleting?.checkInAt && deleting.timesRecorded !== false && data ? ` · in at ${formatInstant(deleting.checkInAt, data.timezone)}` : ''}.
+              Use this for a wrong entry — the student goes back to “Not checked in”. A copy stays in the audit log.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" disabled={!!busyRow} onClick={removeEntry}>
+              {busyRow && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete entry
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

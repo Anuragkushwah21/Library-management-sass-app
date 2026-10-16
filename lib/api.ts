@@ -361,6 +361,7 @@ export const api = {
   }) => apiFetch('/api/attendance/manual', { method: 'POST', body: JSON.stringify(data) }),
   overrideAttendance: (id: string, data: { arrivalStatus?: 'PRESENT' | 'LATE'; note?: string }) =>
     apiFetch(`/api/attendance/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteAttendance: (id: string) => apiFetch(`/api/attendance/${id}`, { method: 'DELETE' }),
 
   // ========== IN-APP NOTIFICATIONS ==========
   getNotificationFeed: () => apiFetch('/api/notifications/feed'),
